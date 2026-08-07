@@ -1,0 +1,4 @@
+interface:
+  display_name: "RRFusion Workflow"
+  short_description: "Arrange parallel retrieval and rank fusion"
+  default_prompt: "Use $agentic-rrfusion to arrange parallel retrieval with rank fusion."

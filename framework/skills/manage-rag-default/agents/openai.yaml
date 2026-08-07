@@ -1,0 +1,4 @@
+interface:
+  display_name: "Default RAG Manager"
+  short_description: "Choose an Agentic RAG workflow"
+  default_prompt: "Use $manage-rag-default to choose an Agentic RAG workflow for this query."

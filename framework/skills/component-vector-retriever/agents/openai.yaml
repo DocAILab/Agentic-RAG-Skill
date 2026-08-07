@@ -1,0 +1,4 @@
+interface:
+  display_name: "Vector Retriever"
+  short_description: "Retrieve documents by vector similarity"
+  default_prompt: "Use $component-vector-retriever to retrieve semantically relevant documents."

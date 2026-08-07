@@ -1,0 +1,83 @@
+# RAGSkill framework 可提交配置模板。
+# 复制为 settings.yaml 后再填写本地密钥；不要把含真实密钥的 settings.yaml 加入仓库。
+schema_version: 1
+
+skills:
+  # Skill 包根目录。相对路径以本配置文件所在的 framework/ 目录为基准；也可填写绝对路径。
+  root: skills
+  # 第一阶段唯一暴露给 LLM 的 Manage Skill 包名，必须存在于上面的 root 中且 kind=manage。
+  manage_skill: manage-rag-default
+
+runtime:
+  # 这些值只在一次 RAG request 未提供同名字段时生效；调用时传入的值优先级更高。
+  request_defaults:
+    # Retriever 默认返回的文档数。较大通常提高召回，但增加后续上下文、延迟和 token 成本。
+    top_k: 3
+    # Generator 单次返回的最大 token 数；不是输入上下文长度。
+    max_tokens: 512
+    # RRFusion 的倒数排名融合常数 k；分数形式为 1 / (k + rank)，一般保持 60。
+    rank_constant: 60
+
+demo:
+  # demo 数据与结果路径均相对当前 framework/ 目录解析。
+  corpus_path: ../experiments/hotpotqa/data/demo/corpus.jsonl
+  test_path: ../experiments/hotpotqa/data/demo/test.jsonl
+  output:
+    # 最终结果与宏平均指标，每次运行覆盖；outputs/ 已忽略，不会污染仓库。
+    result_path: ../experiments/hotpotqa/outputs/demo_results.json
+    # 中间过程结构化日志，JSON Lines 格式并按运行追加。
+    log_path: ../experiments/hotpotqa/outputs/demo.log.jsonl
+  # 1 适合连通测试；20 跑完整 demo；null 表示读取 test.jsonl 中的全部样本。
+  max_examples: 1
+  # true 每题只使用原始 10 篇 distractor，false 使用完整 200 篇共享小语料。
+  candidate_documents_only: true
+  request:
+    top_k: 10
+    max_tokens: 256
+    # 删除这个 constraints 映射即可让模型自行选择 BM25 或 Vector Retriever。
+    constraints:
+      retrieval: lexical-only
+      allowed_retriever: BM25
+      purpose: HotpotQA demo
+
+executor:
+  # 候选协议：openai-compatible 适配 VVEAI/vLLM/SGLang/Ollama；openai 是其别名；
+  # anthropic 使用原生 Messages API，不能直接搭配 OpenAI-compatible 地址。
+  provider: openai-compatible
+  # 必须是服务端真实模型 ID。deepseek-v4-flash 是当前配置；local-executor-model 仅是
+  # 本地服务占位示例，使用时必须替换为本地 API 实际暴露的 ID。其他候选以 /models 为准。
+  model: deepseek-v4-flash
+  # OpenAI-compatible 客户端会继续追加 chat/completions，所以地址需要包含服务的 /v1 前缀。
+  base_url: https://api.vveai.com/v1
+  # api_key 与 api_key_env 互斥。模板默认从环境变量读取，避免仓库保存真实密钥；若要本地
+  # 直写，可把 api_key_env 改为 null，并将 api_key 改为真实值。
+  api_key: null
+  api_key_env: VVEAI_API_KEY
+  # HTTP 连接与响应总超时时间（秒）。
+  timeout_seconds: 120
+  # 额外 HTTP 头；Authorization 已自动设置，通常留空。
+  extra_headers: {}
+  # OpenAI-compatible 通常留空；Anthropic 可设置 api_version、default_max_tokens。
+  options: {}
+
+embedding:
+  # false 会禁用向量客户端，适合仅测试 BM25；Vector Retriever 运行时要求这里为 true。
+  enabled: true
+  # sentence-transformers 在本地加载权重；openai-compatible/openai 则调用远程 /v1/embeddings。
+  # 当前使用本地方式，因为 VVEAI 当前账户没有 bge-large-v1.5-en Embeddings 渠道。
+  provider: sentence-transformers
+  # bge-large-v1.5-en 对应的 Hugging Face 权重 ID，首次向量检索时按需下载。
+  model: BAAI/bge-large-en-v1.5
+  # 本地 provider 不使用 URL、密钥和额外 HTTP 头。
+  base_url: null
+  api_key: null
+  api_key_env: null
+  # 本地 provider 不使用该通用 HTTP 超时字段。
+  timeout_seconds: 120
+  # 本地 provider 必须保持空映射。
+  extra_headers: {}
+  # device=null 自动选择设备；显存不足可减小 batch_size；归一化适合余弦相似度检索。
+  options:
+    device: null
+    batch_size: 32
+    normalize_embeddings: true

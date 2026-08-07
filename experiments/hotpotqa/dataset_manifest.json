@@ -1,0 +1,68 @@
+{
+  "dataset": "HotpotQA",
+  "repository": "hotpotqa/hotpot_qa",
+  "repository_type": "dataset",
+  "revision": "1908d6afbbead072334abe2965f91bd2709910ab",
+  "original_project": "https://hotpotqa.github.io/",
+  "license": "CC BY-SA 4.0",
+  "retrieved_at": "2026-07-29",
+  "storage": {
+    "format": "parquet",
+    "logical_bytes": 746626351,
+    "physical_bytes": 414839695,
+    "hard_links": [
+      {
+        "path": "data/raw/fullwiki/train-00000-of-00002.parquet",
+        "target": "data/raw/distractor/train-00000-of-00002.parquet"
+      },
+      {
+        "path": "data/raw/fullwiki/train-00001-of-00002.parquet",
+        "target": "data/raw/distractor/train-00001-of-00002.parquet"
+      }
+    ]
+  },
+  "files": [
+    {
+      "path": "data/raw/distractor/train-00000-of-00002.parquet",
+      "bytes": 165624177,
+      "rows": 45224,
+      "sha256": "76d3bb3048a7cc73c1958107c0c5872a00d7e7d00c105b81e92f6769e7822e68"
+    },
+    {
+      "path": "data/raw/distractor/train-00001-of-00002.parquet",
+      "bytes": 166162479,
+      "rows": 45223,
+      "sha256": "713661628434fbb19fff7392e2e321e4ed107e3c7c7784d0690946e5f722763f"
+    },
+    {
+      "path": "data/raw/distractor/validation-00000-of-00001.parquet",
+      "bytes": 27452575,
+      "rows": 7405,
+      "sha256": "c20b638ca82b21d04fe12e14ff417ad05153d4d215a65de54497fca4e972f7c6"
+    },
+    {
+      "path": "data/raw/fullwiki/train-00000-of-00002.parquet",
+      "bytes": 165624177,
+      "rows": 45224,
+      "sha256": "76d3bb3048a7cc73c1958107c0c5872a00d7e7d00c105b81e92f6769e7822e68"
+    },
+    {
+      "path": "data/raw/fullwiki/train-00001-of-00002.parquet",
+      "bytes": 166162479,
+      "rows": 45223,
+      "sha256": "713661628434fbb19fff7392e2e321e4ed107e3c7c7784d0690946e5f722763f"
+    },
+    {
+      "path": "data/raw/fullwiki/validation-00000-of-00001.parquet",
+      "bytes": 28041820,
+      "rows": 7405,
+      "sha256": "78933c0a31a5f7b420d4effdf4cd4eed573b28c6a3da6179dcf7a02b39e51d03"
+    },
+    {
+      "path": "data/raw/fullwiki/test-00000-of-00001.parquet",
+      "bytes": 27558644,
+      "rows": 7405,
+      "sha256": "f6b522fed6748b33c0eaad972d53bc89c10b8afefb329629f779bfb967442cd8"
+    }
+  ]
+}

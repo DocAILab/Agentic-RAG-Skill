@@ -1,0 +1,55 @@
+{
+  "schema_version": 1,
+  "name": "hotpotqa-demo-v1",
+  "source": {
+    "dataset": "HotpotQA",
+    "configuration": "distractor",
+    "split": "validation",
+    "path": "data/raw/distractor/validation-00000-of-00001.parquet",
+    "sha256": "c20b638ca82b21d04fe12e14ff417ad05153d4d215a65de54497fca4e972f7c6",
+    "license": "CC BY-SA 4.0"
+  },
+  "sampling": {
+    "method": "deterministic-sha256-stratified",
+    "seed": 20260807,
+    "strata": [
+      {
+        "type": "bridge",
+        "answer_type": "span",
+        "count": 10
+      },
+      {
+        "type": "comparison",
+        "answer_type": "span",
+        "count": 6
+      },
+      {
+        "type": "comparison",
+        "answer_type": "yes",
+        "count": 2
+      },
+      {
+        "type": "comparison",
+        "answer_type": "no",
+        "count": 2
+      }
+    ]
+  },
+  "counts": {
+    "documents": 200,
+    "test_examples": 20,
+    "supporting_facts": 44
+  },
+  "files": {
+    "corpus.jsonl": {
+      "records": 200,
+      "bytes": 255212,
+      "sha256": "fdd3009b83f90b6f4ec35e14f665241eeb212a7d70aee3cef05ed9b991dde00e"
+    },
+    "test.jsonl": {
+      "records": 20,
+      "bytes": 14509,
+      "sha256": "0964206e4cfaee3b05e69ea1ee84757068467949216f3d163df93b4641337f4f"
+    }
+  }
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Grounded Generator"
+  short_description: "Generate answers grounded in evidence"
+  default_prompt: "Use $component-grounded-generator to answer from selected evidence."

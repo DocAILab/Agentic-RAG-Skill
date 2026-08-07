@@ -1,0 +1,6 @@
+# Raw datasets are downloaded locally and must not be committed.
+data/raw/**/*.parquet
+
+# Keep the result directory but ignore generated experiment outputs.
+outputs/*
+!outputs/.gitkeep

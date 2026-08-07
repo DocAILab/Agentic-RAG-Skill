@@ -1,0 +1,51 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ragskill"
+version = "0.1.0"
+description = "Executable base skills for adaptive and self-evolving RAG research."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=1.26",
+    "PyYAML>=6.0",
+]
+
+[project.scripts]
+ragskill-demo = "framework.demo:main"
+
+[project.optional-dependencies]
+embedding = [
+    "sentence-transformers>=3.0",
+]
+experiment = [
+    "pyarrow>=15.0",
+]
+rerank = [
+    "sentence-transformers>=3.0",
+]
+test = [
+    "pytest>=8.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["framework*"]
+
+[tool.setuptools.package-data]
+framework = [
+    "SPEC.md",
+    "settings.example.yaml",
+    "skills/*/SKILL.md",
+    "skills/*/ragskill.yaml",
+    "skills/*/agents/*.yaml",
+    "skills/*/scripts/*.py",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q"
+asyncio_default_fixture_loop_scope = "function"

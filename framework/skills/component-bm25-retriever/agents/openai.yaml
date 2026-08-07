@@ -1,0 +1,4 @@
+interface:
+  display_name: "BM25 Retriever"
+  short_description: "Retrieve documents with BM25"
+  default_prompt: "Use $component-bm25-retriever to retrieve lexically relevant documents."
