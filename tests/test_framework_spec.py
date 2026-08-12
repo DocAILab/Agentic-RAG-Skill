@@ -3,7 +3,9 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-from framework import SkillKind, discover_specs, load_runtime_callable
+import pytest
+
+from framework import SkillKind, SkillSpecError, discover_specs, load_runtime_callable
 
 SAMPLE_ROOT = Path(__file__).parents[1] / "framework" / "skills"
 
@@ -72,6 +74,42 @@ def test_sample_repository_has_three_strict_skill_levels() -> None:
     assert sum(spec.kind is SkillKind.MANAGE for spec in specs) == 1
     assert sum(spec.kind is SkillKind.AGENTIC for spec in specs) == 2
     assert sum(spec.kind is SkillKind.COMPONENT for spec in specs) == 3
+
+
+def test_skill_packages_are_grouped_by_declared_kind() -> None:
+    """验证每个 Skill 包都位于与清单 kind 对应的类型目录。"""
+    expected_directories = {
+        SkillKind.MANAGE: "manage",
+        SkillKind.AGENTIC: "agentic",
+        SkillKind.COMPONENT: "components",
+    }
+
+    for spec in discover_specs(SAMPLE_ROOT):
+        assert spec.package_path.parent.name == expected_directories[spec.kind]
+
+
+def test_discovery_rejects_skill_in_wrong_kind_directory(tmp_path) -> None:
+    """验证发现器会拒绝目录层级与清单 kind 不一致的 Skill。"""
+    package = tmp_path / "agentic" / "misplaced-manage"
+    package.mkdir(parents=True)
+    (package / "SKILL.md").write_text(
+        "---\n"
+        "name: misplaced-manage\n"
+        "description: A deliberately misplaced Manage Skill for validation.\n"
+        "---\n",
+        encoding="utf-8",
+    )
+    (package / "ragskill.yaml").write_text(
+        "schema_version: 1\n"
+        "runtime_id: manage.test.misplaced\n"
+        "kind: manage\n"
+        "selection:\n"
+        "  target_kind: agentic\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SkillSpecError, match="stored under 'agentic'"):
+        discover_specs(tmp_path, validate_runtime=False)
 
 
 def test_required_agentic_slots_have_compatible_component_samples() -> None:

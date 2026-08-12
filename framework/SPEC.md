@@ -122,7 +122,21 @@ python -B run_demo.py
 
 ## 3. 可移植 Skill 包
 
-每个 Skill 都必须首先是标准 Agent Skill：
+Skill 根目录必须先按职责分为三级，类型目录本身不是 Skill 包：
+
+```text
+skills/
+├── manage/
+│   └── <manage-skill-name>/
+├── agentic/
+│   └── <agentic-skill-name>/
+└── components/
+    └── <component-skill-name>/
+```
+
+`ragskill.yaml.kind` 必须与所在类型目录一致：`manage/` 对应 `manage`，`agentic/` 对应 `agentic`，`components/` 对应 `component`。框架拒绝根目录平铺、未知层级、额外嵌套和类型错放的 Skill，避免选择阶段跨层加载。
+
+每个类型目录中的 Skill 都必须首先是标准 Agent Skill：
 
 ```text
 <skill-name>/

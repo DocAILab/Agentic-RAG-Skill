@@ -3,7 +3,7 @@
 schema_version: 1
 
 skills:
-  # Skill 包根目录。相对路径以本配置文件所在的 framework/ 目录为基准；也可填写绝对路径。
+  # Skill 类型根目录，其下固定为 manage/、agentic/、components/。相对路径以本配置文件所在的 framework/ 目录为基准；也可填写绝对路径。
   root: skills
   # 第一阶段唯一暴露给 LLM 的 Manage Skill 包名，必须存在于上面的 root 中且 kind=manage。
   manage_skill: manage-rag-default

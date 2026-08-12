@@ -8,7 +8,7 @@ Agentic RAG Skill 是一个支持三级 Skill 选择与按需加载的 RAG 研�
 - **Agentic RAG Skill**：定义 Sequential、Parallel 等 RAG 流程，只编排抽象组件槽位。
 - **Components Skill**：实现 Retriever、Reranker、Generator 等原子能力。
 
-标准 Skill 包位于 `framework/skills/`。每个包以 `SKILL.md` 作为 Agent 框架通用入口，并使用可忽略的 `ragskill.yaml` 与 `scripts/` 扩展本框架运行能力。
+标准 Skill 包按类型位于 `framework/skills/manage/`、`framework/skills/agentic/` 和 `framework/skills/components/`。每个包以 `SKILL.md` 作为 Agent 框架通用入口，并使用可忽略的 `ragskill.yaml` 与 `scripts/` 扩展本框架运行能力。
 
 ## 安装
 
@@ -35,7 +35,7 @@ Copy-Item framework/settings.example.yaml framework/settings.yaml
 
 在 `framework/settings.yaml` 中配置 Executor API。该文件已加入 `.gitignore`，不得提交真实密钥。模板默认从 `VVEAI_API_KEY` 环境变量读取密钥，也可以仅在被忽略的本地配置中使用 `api_key`。
 
-`skills.root` 相对配置文件所在的 `framework/` 目录解析，因此当前值为 `skills`，对应 `framework/skills/`。
+`skills.root` 指向三个类型目录的共同父目录。它相对配置文件所在的 `framework/` 目录解析，因此当前值为 `skills`，对应 `framework/skills/`；框架会继续从其下的 `manage/`、`agentic/`、`components/` 发现 Skill。
 
 ## 运行 Demo
 
@@ -64,7 +64,10 @@ python -B -m ruff check --no-cache framework tests experiments/hotpotqa/scripts 
 ```text
 .
 |-- framework/
-|   |-- skills/                 # Manage、Agentic 与 Components Skill 包
+|   |-- skills/                 # 真正的 Agent Skills
+|   |   |-- manage/             # 高层任务分析与 Agentic Skill 选择
+|   |   |-- agentic/            # RAG workflow 与抽象组件槽位
+|   |   `-- components/         # Retriever、Generator 等原子实现
 |   |-- evaluation/             # Hit@K、EM、F1
 |   |-- settings.example.yaml   # 可提交配置模板
 |   |-- selection.py            # 三级 LLM 选择
