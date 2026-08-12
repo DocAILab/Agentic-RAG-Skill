@@ -27,6 +27,13 @@ class SkillKind(str, Enum):
     COMPONENT = "component"
 
 
+SKILL_KIND_DIRECTORIES = (
+    ("manage", SkillKind.MANAGE),
+    ("agentic", SkillKind.AGENTIC),
+    ("components", SkillKind.COMPONENT),
+)
+
+
 @dataclass(frozen=True, slots=True)
 class RuntimeSpec:
     type: str
@@ -89,14 +96,45 @@ def discover_specs(
     *,
     validate_runtime: bool = True,
 ) -> tuple[RAGSkillSpec, ...]:
-    """发现根目录下的 Skill 包，并拒绝重复的包名和运行时 ID。"""
+    """按三级目录发现 Skill 包，并拒绝错层、重复名称和重复运行时 ID。"""
     root_path = Path(root).resolve()
     if not root_path.is_dir():
         raise SkillSpecError(f"Skill root does not exist: {root_path}")
-    specs = tuple(
-        load_spec(skill_file.parent, validate_runtime=validate_runtime)
-        for skill_file in sorted(root_path.glob("*/SKILL.md"))
+
+    specs = []
+    discovered_files = set()
+    for directory_name, expected_kind in SKILL_KIND_DIRECTORIES:
+        kind_root = root_path / directory_name
+        if not kind_root.exists():
+            continue
+        if not kind_root.is_dir():
+            raise SkillSpecError(f"Skill kind path is not a directory: {kind_root}")
+        for skill_file in sorted(kind_root.glob("*/SKILL.md")):
+            spec = load_spec(
+                skill_file.parent,
+                validate_runtime=validate_runtime,
+            )
+            if spec.kind is not expected_kind:
+                raise SkillSpecError(
+                    f"Skill '{spec.package_name}' declares kind '{spec.kind.value}' "
+                    f"but is stored under '{directory_name}'."
+                )
+            specs.append(spec)
+            discovered_files.add(skill_file.resolve())
+
+    misplaced_files = sorted(
+        skill_file
+        for skill_file in root_path.rglob("SKILL.md")
+        if skill_file.resolve() not in discovered_files
     )
+    if misplaced_files:
+        relative_paths = [str(path.relative_to(root_path)) for path in misplaced_files]
+        raise SkillSpecError(
+            "Skill packages must be stored under manage/, agentic/, or components/: "
+            f"{relative_paths}"
+        )
+
+    specs = tuple(specs)
     package_names = [spec.package_name for spec in specs]
     runtime_ids = [spec.runtime_id for spec in specs]
     if len(package_names) != len(set(package_names)):

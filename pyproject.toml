@@ -38,10 +38,10 @@ include = ["framework*"]
 framework = [
     "SPEC.md",
     "settings.example.yaml",
-    "skills/*/SKILL.md",
-    "skills/*/ragskill.yaml",
-    "skills/*/agents/*.yaml",
-    "skills/*/scripts/*.py",
+    "skills/*/*/SKILL.md",
+    "skills/*/*/ragskill.yaml",
+    "skills/*/*/agents/*.yaml",
+    "skills/*/*/scripts/*.py",
 ]
 
 [tool.pytest.ini_options]
