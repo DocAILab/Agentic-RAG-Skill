@@ -59,6 +59,29 @@ def test_bm25_duplicate_query_terms_do_not_multiply_scores() -> None:
     assert repeated == once
 
 
+def test_bm25f_normalizes_title_and_body_lengths_independently() -> None:
+    run = _component("component-bm25-retriever")
+    result = run(
+        {
+            "query": "orchid",
+            "documents": [
+                {"id": "a-short", "title": "orchid", "text": "brief"},
+                {
+                    "id": "b-long",
+                    "title": "orchid",
+                    "text": " ".join(["irrelevant"] * 100),
+                },
+            ],
+            "top_k": 2,
+        },
+        object(),
+    )
+
+    first, second = result["documents"]
+    assert [first["id"], second["id"]] == ["a-short", "b-long"]
+    assert first["score"] == pytest.approx(second["score"])
+
+
 def test_bm25_handles_empty_query_and_validates_parameters() -> None:
     run = _component("component-bm25-retriever")
     documents = [{"id": "a", "title": "A"}]
@@ -67,6 +90,11 @@ def test_bm25_handles_empty_query_and_validates_parameters() -> None:
     with pytest.raises(ValueError, match="title_boost"):
         run(
             {"query": "a", "documents": documents, "title_boost": -1},
+            object(),
+        )
+    with pytest.raises(ValueError, match="title_b"):
+        run(
+            {"query": "a", "documents": documents, "title_b": 1.1},
             object(),
         )
 
