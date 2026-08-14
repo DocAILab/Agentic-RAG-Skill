@@ -10,12 +10,15 @@ from .evaluator import (
     evaluate_rag_result,
 )
 from .metrics import (
+    all_support_at_k,
     exact_match_score,
     f1_score,
     hit_at_1,
     hit_at_10,
     hit_at_k,
     normalize_answer,
+    recall_at_k,
+    reciprocal_rank,
 )
 
 __all__ = [
@@ -23,6 +26,7 @@ __all__ = [
     "EvaluationExample",
     "EvaluationSummary",
     "ExampleMetrics",
+    "all_support_at_k",
     "evaluate_batch",
     "evaluate_example",
     "evaluate_rag_result",
@@ -32,4 +36,6 @@ __all__ = [
     "hit_at_10",
     "hit_at_k",
     "normalize_answer",
+    "recall_at_k",
+    "reciprocal_rank",
 ]

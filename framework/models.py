@@ -183,6 +183,10 @@ class SentenceTransformerEmbeddingClient:
             raise ModelAPIError("Local embedding vector count does not match input")
         return embeddings
 
+    def load(self) -> None:
+        """显式加载一次模型，使下载或设备错误在评测开始前暴露。"""
+        self._get_encoder()
+
     def _get_encoder(self) -> Any:
         """延迟加载 sentence-transformers 模型，避免未使用向量检索时加载权重。"""
         if self.encoder is not None:
