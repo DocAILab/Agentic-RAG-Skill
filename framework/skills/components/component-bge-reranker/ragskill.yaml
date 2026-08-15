@@ -1,0 +1,13 @@
+schema_version: 1
+runtime_id: component.rerank.bge
+kind: component
+version: 0.1.0
+mutable: false
+runtime:
+  type: python-component
+  path: scripts/component.py
+  callable: run
+provides:
+  reranker:
+    input: RerankRequest
+    output: RerankResult

@@ -67,13 +67,13 @@ def _specs_by_name():
 
 
 def test_sample_repository_has_three_strict_skill_levels() -> None:
-    """验证样例仓库严格包含三层共六个 Skill。"""
+    """验证样例仓库严格包含三层共七个 Skill。"""
     specs = tuple(discover_specs(SAMPLE_ROOT))
 
-    assert len(specs) == 6
+    assert len(specs) == 7
     assert sum(spec.kind is SkillKind.MANAGE for spec in specs) == 1
     assert sum(spec.kind is SkillKind.AGENTIC for spec in specs) == 2
-    assert sum(spec.kind is SkillKind.COMPONENT for spec in specs) == 3
+    assert sum(spec.kind is SkillKind.COMPONENT for spec in specs) == 4
 
 
 def test_skill_packages_are_grouped_by_declared_kind() -> None:
@@ -192,7 +192,7 @@ def test_rrfusion_workflow_calls_two_retrievers_and_fuses_results() -> None:
 
 
 def test_component_samples_have_concrete_executable_implementations() -> None:
-    """验证三个 Component 样例均提供可直接执行的具体实现。"""
+    """验证三个既有 Component 样例仍提供可直接执行的具体实现。"""
     specs = _specs_by_name()
     context = FakeContext()
 

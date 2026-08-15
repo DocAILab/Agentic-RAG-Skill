@@ -1,0 +1,4 @@
+interface:
+  display_name: "BGE Reranker"
+  short_description: "Rerank candidate documents by cross‑encoder relevance score"
+  default_prompt: "Use $component-bge-reranker to rerank retrieved candidate documents."
