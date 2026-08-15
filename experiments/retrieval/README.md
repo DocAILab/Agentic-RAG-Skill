@@ -1,5 +1,8 @@
 # Retrieval Benchmark
 
+For the frozen B0-B3/V0-V2 comparison, parameter tuning, and paired analysis
+workflow, see [EXPERIMENTS.md](EXPERIMENTS.md).
+
 该入口直接评测 BM25 或 BGE-Large Component，不经过 Manage/Agentic/Generator，也不会调用 DeepSeek。每个问题只在数据集提供的候选文档中检索。
 
 ## 安装实验依赖

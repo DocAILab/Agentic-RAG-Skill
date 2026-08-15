@@ -4,6 +4,9 @@ import json
 
 from experiments.retrieval.benchmark import run_benchmark
 from experiments.retrieval.loading import DatasetItem, iter_huggingface_items
+from experiments.retrieval.retrievers import build_retriever
+from experiments.retrieval.run_benchmark import build_parser, build_run_metadata
+from experiments.retrieval.sampling import build_manifest, write_manifest
 from experiments.retrieval.schema import RetrievalDocument, RetrievalExample
 
 
@@ -137,3 +140,67 @@ def test_resume_limit_applies_to_total_source_prefix(tmp_path) -> None:
 
     assert retriever.calls == ["one"]
     assert len((tmp_path / "results.jsonl").read_text().splitlines()) == 1
+
+
+def test_bm25f_cli_options_define_run_identity_and_reach_component(tmp_path) -> None:
+    manifest_path = tmp_path / "manifest.json"
+    manifest = build_manifest(
+        [DatasetItem(0, "one", example=_example())],
+        dataset="hotpotqa",
+        split="validation",
+        size=1,
+    )
+    write_manifest(manifest_path, manifest)
+    args = build_parser().parse_args(
+        [
+            "--dataset",
+            "hotpotqa",
+            "--retriever",
+            "bm25",
+            "--variant",
+            "B2",
+            "--k1",
+            "2.0",
+            "--b",
+            "0.5",
+            "--title-b",
+            "0.25",
+            "--title-boost",
+            "0",
+            "--manifest",
+            str(manifest_path),
+        ]
+    )
+    metadata = build_run_metadata(args, code_commit="abc123")
+    retriever = build_retriever(
+        args.retriever,
+        variant=args.variant,
+        k1=args.k1,
+        b=args.b,
+        title_b=args.title_b,
+        title_boost=args.title_boost,
+    )
+    example = RetrievalExample(
+        id="fields",
+        query="orchid",
+        documents=(
+            RetrievalDocument("title", "orchid", "noise"),
+            RetrievalDocument("body", "noise", "orchid"),
+        ),
+    )
+
+    assert metadata["variant"] == "B2"
+    assert metadata["parameters"] == {
+        "k1": 2.0,
+        "b": 0.5,
+        "title_b": 0.25,
+        "title_boost": 0.0,
+    }
+    assert metadata["manifest"] == str(manifest_path)
+    assert metadata["manifest_digest"] == manifest["digest"]
+    assert metadata["code_commit"] == "abc123"
+    assert "batch_size" not in metadata
+    assert [item["id"] for item in retriever.retrieve(example, top_k=2)] == [
+        "body",
+        "title",
+    ]

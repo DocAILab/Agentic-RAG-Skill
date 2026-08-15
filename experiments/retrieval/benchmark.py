@@ -15,7 +15,7 @@ from .persistence import (
     validate_resume,
     write_json,
 )
-from .scoring import SummaryAccumulator, score_example
+from .scoring import SummaryAccumulator, evidence_token_estimate, score_example
 
 
 def run_benchmark(
@@ -94,6 +94,10 @@ def _evaluate_item(item, retriever, top_k, signature):
             {"id": document["id"], "score": document.get("score")}
             for document in documents
         ],
+        "retrieval_stats": {
+            "returned_count": len(documents),
+            "evidence_token_estimate": evidence_token_estimate(documents),
+        },
         "metrics": score_example(item.example, retrieved_ids),
     }
 
