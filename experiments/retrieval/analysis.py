@@ -54,9 +54,9 @@ def _metric_index(records, metric):
     indexed = {}
     seen = set()
     for record in records:
-        identity = str(record["sample_id"])
+        identity = record_identity(record)
         if identity in seen:
-            raise ValueError(f"duplicate sample id: {identity}")
+            raise ValueError(f"duplicate sample identity: {identity}")
         seen.add(identity)
         metrics = record.get("metrics")
         if record.get("status") != "ok" or metrics is None:
@@ -65,6 +65,17 @@ def _metric_index(records, metric):
             raise ValueError(f"metric {metric!r} is missing for sample {identity}")
         indexed[identity] = float(metrics[metric])
     return indexed
+
+
+def record_identity(record: Mapping) -> tuple[str, str]:
+    """Return the benchmark's stable row identity.
+
+    Some datasets reuse a question ID for different evidence rows, so the
+    source position is part of the identity whenever it is available.
+    """
+    source_index = record.get("source_index")
+    source_key = "" if source_index is None else str(source_index)
+    return source_key, str(record["sample_id"])
 
 
 def _bootstrap_interval(values, *, resamples, seed):

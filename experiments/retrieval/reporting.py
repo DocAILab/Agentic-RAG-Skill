@@ -6,6 +6,7 @@ import csv
 from collections.abc import Iterable, Mapping
 from pathlib import Path
 
+from .analysis import record_identity
 from .scoring import select_smallest_k
 from .selection import write_frozen_selection
 
@@ -107,16 +108,17 @@ def _record_index(records):
     for record in records:
         if record.get("status") != "ok" or record.get("metrics") is None:
             continue
-        identity = str(record["sample_id"])
+        identity = record_identity(record)
         if identity in indexed:
-            raise ValueError(f"duplicate sample id: {identity}")
+            raise ValueError(f"duplicate sample identity: {identity}")
         indexed[identity] = record
     return indexed
 
 
 def _failure_record(identity, baseline, candidate, metric):
     return {
-        "sample_id": identity,
+        "sample_id": identity[1],
+        "source_index": candidate.get("source_index"),
         "metric": metric,
         "baseline_value": baseline["metrics"][metric],
         "candidate_value": candidate["metrics"][metric],

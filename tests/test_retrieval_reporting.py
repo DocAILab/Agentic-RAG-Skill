@@ -49,6 +49,26 @@ def test_reporting_writes_flat_utf8_table_and_directional_failures(tmp_path) -> 
     assert failures["baseline_wins"][0]["sample_id"] == "b"
 
 
+def test_failure_report_distinguishes_repeated_ids_by_source_index() -> None:
+    baseline = [
+        {**_record("same", 0.0, ["noise"]), "source_index": 1},
+        {**_record("same", 1.0, ["gold"]), "source_index": 9},
+    ]
+    candidate = [
+        {**_record("same", 1.0, ["gold"]), "source_index": 1},
+        {**_record("same", 0.0, ["noise"]), "source_index": 9},
+    ]
+
+    failures = directional_failures(
+        baseline,
+        candidate,
+        metric="all_support@5",
+    )
+
+    assert failures["candidate_wins"][0]["source_index"] == 1
+    assert failures["baseline_wins"][0]["source_index"] == 9
+
+
 def test_final_config_contains_frozen_choices_and_context_efficient_k() -> None:
     metrics = {
         **{f"all_support@{rank}": value for rank, value in zip((1, 2, 3, 5, 10), (0.2, 0.8, 0.96, 1.0, 1.0), strict=True)},
