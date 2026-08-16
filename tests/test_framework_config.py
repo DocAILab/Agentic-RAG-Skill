@@ -147,6 +147,7 @@ def test_run_rag_from_config_executes_complete_pipeline(monkeypatch) -> None:
             json.dumps(
                 {
                     "component_bindings": {
+                        "rewriter": [],
                         "retriever": ["component-bm25-retriever"],
                         "reranker": [],
                         "generator": ["component-grounded-generator"],

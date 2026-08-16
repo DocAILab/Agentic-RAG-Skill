@@ -182,6 +182,13 @@ runtime:
   path: scripts/workflow.py
   callable: run
 slots:
+  rewriter:
+    capability: rewriter
+    input: RewriteRequest
+    output: RewriteResult
+    min: 0
+    max: 1
+
   retriever:
     capability: retriever
     input: RetrievalRequest
@@ -208,6 +215,8 @@ components.call_all(slot, inputs)
 ```
 
 Agentic 脚本可以实现条件、循环、并行、融合、重试和终止逻辑，但所有原子 RAG 能力必须通过槽位空调用完成。
+
+当前 Vanilla RAG 的可选 `rewriter` 槽位采用 single-sample HyDE（`N=1`）：Rewriter 接收原始查询，只生成一个假设文档，并将单个 `rewritten_query` 交给语义 Vector Retriever。Retriever 之后的 Reranker 和 Generator 继续使用原始查询；假设文档不得加入检索证据或直接用于最终回答。
 
 ## 6. Component Skill
 
@@ -238,18 +247,39 @@ def run(inputs, context):
 
 `context` 提供冻结 Executor Model、Embedding Model 等外部服务。Component 不选择其他 Skill，不安排跨组件流程。
 
+Component 可以通过可选的 `requires` 声明跨 capability 的组件兼容要求。每个 key 是所需 capability，每个 `components` 列表给出允许绑定的 Component 包名：
+
+```yaml
+provides:
+  rewriter:
+    input: RewriteRequest
+    output: RewriteResult
+requires:
+  retriever:
+    components:
+      - component-vector-retriever
+```
+
+Skill 发现阶段校验被引用的 Component 存在并且确实提供对应 capability；Component 选择阶段和编译阶段都会再次校验实际绑定。single-sample HyDE 使用该声明强制要求 Vector Retriever，因此 `HyDE + BM25` 会被拒绝，即使模型或调用方显式返回了该组合。
+
 ## 7. 标准数据包络
 
 V0 样例使用 JSON-compatible dictionary：
 
+- `RewriteRequest`：`query`, 可选 `temperature`, 可选 `max_tokens`
+- `RewriteResult`：`rewritten_query`
 - `RetrievalRequest`：`query`, `documents`, `top_k`
 - `RetrievalResult`：`documents`
 - `RerankRequest`：`query`, `documents`, `top_k`
 - `RerankResult`：`documents`
 - `GenerationRequest`：`query`, `documents`, `max_tokens`
 - `GenerationResult`：`answer`
-- `RAGRequest`：`query`, `documents`, `top_k`, `max_tokens`
+- `RAGRequest`：`query`, `documents`, `top_k`, `max_tokens`, 可选 `rewrite_temperature`, 可选 `rewrite_max_tokens`
 - `RAGResult`：`answer`, `documents`, `trace`
+
+`RewriteRequest.query` 必须是非空原始查询。`temperature` 是可选的非负生成温度，默认值为 `0.0`；`max_tokens` 是可选的正整数生成长度上限，默认值为 `256`。`RewriteResult.rewritten_query` 必须是非空字符串，并且只包含一个假设答案式文档。
+
+V0 的 HyDE 接口固定为 single-sample HyDE（`N=1`）：每个查询只调用一次生成模型，不返回假设文档列表，也不在 Rewriter 中执行多样本向量平均。`rewritten_query` 只作为 Vector Retriever 的检索查询；原始 `query` 保留给 Reranker 和 Generator。
 
 后续版本可以将这些包络升级为 JSON Schema，但接口名称和责任边界必须保持稳定。
 
@@ -261,7 +291,9 @@ V0 样例使用 JSON-compatible dictionary：
 run_compiled_rag(
     workflow="agentic-vanilla-rag",
     bindings={
+        "rewriter": [],
         "retriever": ["component-bm25-retriever"],
+        "reranker": [],
         "generator": ["component-grounded-generator"],
     },
     request=request,

@@ -55,6 +55,7 @@ def test_run_demo_uses_configured_data_and_writes_report(tmp_path) -> None:
             json.dumps(
                 {
                     "component_bindings": {
+                        "rewriter": [],
                         "retriever": ["component-bm25-retriever"],
                         "reranker": [],
                         "generator": ["component-grounded-generator"],

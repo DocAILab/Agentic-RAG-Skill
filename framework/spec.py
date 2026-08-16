@@ -5,7 +5,7 @@ from __future__ import annotations
 import importlib.util
 import inspect
 import re
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -49,6 +49,12 @@ class CapabilitySpec:
 
 
 @dataclass(frozen=True, slots=True)
+class CapabilityRequirementSpec:
+    capability: str
+    components: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class SlotSpec:
     name: str
     capability: str
@@ -88,6 +94,7 @@ class RAGSkillSpec:
     selection: SelectionSpec | None = None
     slots: tuple[SlotSpec, ...] = ()
     provides: tuple[CapabilitySpec, ...] = ()
+    requires: tuple[CapabilityRequirementSpec, ...] = ()
     raw: Mapping[str, Any] = field(default_factory=dict, repr=False)
 
 
@@ -141,6 +148,7 @@ def discover_specs(
         raise SkillSpecError("Duplicate Skill package names.")
     if len(runtime_ids) != len(set(runtime_ids)):
         raise SkillSpecError("Duplicate Skill runtime IDs.")
+    _validate_component_requirements(specs)
     return specs
 
 
@@ -163,6 +171,7 @@ def load_spec(
         selection = _parse_selection(payload.get("selection"))
         slots = _parse_slots(payload.get("slots", {}))
         provides = _parse_capabilities(payload.get("provides", {}))
+        requires = _parse_requirements(payload.get("requires", {}))
         spec = RAGSkillSpec(
             package_name=package_name,
             description=description,
@@ -175,6 +184,7 @@ def load_spec(
             selection=selection,
             slots=slots,
             provides=provides,
+            requires=requires,
             raw=payload,
         )
     except (KeyError, TypeError, ValueError) as exc:
@@ -213,9 +223,9 @@ def _validate_kind_contract(spec: RAGSkillSpec) -> None:
             raise SkillSpecError("Manage Skill must declare selection.")
         if spec.selection.target_kind is not SkillKind.AGENTIC:
             raise SkillSpecError("Manage Skill must select Agentic Skills.")
-        if spec.runtime is not None or spec.slots or spec.provides:
+        if spec.runtime is not None or spec.slots or spec.provides or spec.requires:
             raise SkillSpecError(
-                "Manage Skill cannot declare runtime, slots, or capabilities."
+                "Manage Skill cannot declare runtime, slots, capabilities, or requirements."
             )
     elif spec.kind is SkillKind.AGENTIC:
         if spec.runtime is None or spec.runtime.type != "python-workflow":
@@ -224,9 +234,9 @@ def _validate_kind_contract(spec: RAGSkillSpec) -> None:
             )
         if not spec.slots:
             raise SkillSpecError("Agentic Skill must declare Component slots.")
-        if spec.selection is not None or spec.provides:
+        if spec.selection is not None or spec.provides or spec.requires:
             raise SkillSpecError(
-                "Agentic Skill cannot declare Manage selection or capabilities."
+                "Agentic Skill cannot declare Manage selection, capabilities, or requirements."
             )
     else:
         if spec.runtime is None or spec.runtime.type != "python-component":
@@ -361,6 +371,95 @@ def _parse_capabilities(payload: Any) -> tuple[CapabilitySpec, ...]:
             )
         )
     return tuple(capabilities)
+
+
+def _parse_requirements(payload: Any) -> tuple[CapabilityRequirementSpec, ...]:
+    """解析 Component 对其他 capability 的允许组件要求。"""
+    if not isinstance(payload, Mapping):
+        raise SkillSpecError("requires must be a mapping.")
+    requirements = []
+    for capability, value in payload.items():
+        if not isinstance(value, Mapping):
+            raise SkillSpecError(
+                f"Requirement for capability '{capability}' must be a mapping."
+            )
+        components = value.get("components")
+        if not isinstance(components, list) or not components or not all(
+            isinstance(name, str) and name.strip() for name in components
+        ):
+            raise SkillSpecError(
+                f"Requirement for capability '{capability}' must contain "
+                "a non-empty components string list."
+            )
+        normalized = tuple(name.strip() for name in components)
+        if len(normalized) != len(set(normalized)):
+            raise SkillSpecError(
+                f"Requirement for capability '{capability}' contains duplicates."
+            )
+        requirements.append(
+            CapabilityRequirementSpec(
+                capability=str(capability),
+                components=normalized,
+            )
+        )
+    return tuple(requirements)
+
+
+def _validate_component_requirements(specs: Sequence[RAGSkillSpec]) -> None:
+    """验证 Component requirements 引用已存在且能力匹配的组件。"""
+    components = {
+        spec.package_name: spec
+        for spec in specs
+        if spec.kind is SkillKind.COMPONENT
+    }
+    for component in components.values():
+        for requirement in component.requires:
+            for required_name in requirement.components:
+                required = components.get(required_name)
+                if required is None:
+                    raise SkillSpecError(
+                        f"Component '{component.package_name}' requires unknown "
+                        f"Component '{required_name}'."
+                    )
+                if not any(
+                    capability.name == requirement.capability
+                    for capability in required.provides
+                ):
+                    raise SkillSpecError(
+                        f"Component '{component.package_name}' requires "
+                        f"'{required_name}' to provide capability "
+                        f"'{requirement.capability}'."
+                    )
+
+
+def binding_requirement_errors(
+    agentic: RAGSkillSpec,
+    bindings: Mapping[str, Sequence[str]],
+    components: Mapping[str, RAGSkillSpec],
+) -> tuple[str, ...]:
+    """返回所选 Component 跨 capability 依赖中未满足的错误。"""
+    selected_by_capability: dict[str, set[str]] = {}
+    selected_names = set()
+    for slot in agentic.slots:
+        names = tuple(bindings.get(slot.name, ()))
+        selected_by_capability.setdefault(slot.capability, set()).update(names)
+        selected_names.update(names)
+
+    errors = []
+    for selected_name in sorted(selected_names):
+        component = components.get(selected_name)
+        if component is None:
+            continue
+        for requirement in component.requires:
+            selected = selected_by_capability.get(requirement.capability, set())
+            allowed = set(requirement.components)
+            if not selected or not selected.issubset(allowed):
+                errors.append(
+                    f"Component '{selected_name}' requires capability "
+                    f"'{requirement.capability}' to use one of "
+                    f"{sorted(allowed)}, got {sorted(selected)}"
+                )
+    return tuple(errors)
 
 
 def _safe_runtime_path(spec: RAGSkillSpec) -> Path:

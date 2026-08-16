@@ -69,6 +69,7 @@ def _vanilla_plan() -> RAGSelectionPlan:
         agentic_skill="agentic-vanilla-rag",
         agentic_reason="Sequential retrieval is sufficient.",
         component_bindings={
+            "rewriter": (),
             "retriever": ("component-bm25-retriever",),
             "reranker": (),
             "generator": ("component-grounded-generator",),
@@ -104,6 +105,77 @@ def test_compile_rag_command_executes_concrete_components() -> None:
     ]
     assert "component-bm25-retriever" in command.instruction
     assert "Apple trees grow fruit" in model.calls[0][0]
+
+
+def test_run_compiled_rag_executes_hyde_vector_pipeline() -> None:
+    """验证 HyDE 假设文档只驱动向量检索，不会混入生成证据。"""
+    model = ScriptedExecutorModel(
+        [
+            "Apple trees grow in imaginary lunar orchards.",
+            "Apples grow in orchards.",
+        ]
+    )
+    context = RuntimeComponentContext(
+        executor_model=model,
+        embedding_model=KeywordEmbeddingModel(),
+    )
+
+    result = run_compiled_rag(
+        workflow="agentic-vanilla-rag",
+        bindings={
+            "rewriter": ["component-hyde-rewriter"],
+            "retriever": ["component-vector-retriever"],
+            "reranker": [],
+            "generator": ["component-grounded-generator"],
+        },
+        request={
+            "query": "Where do apple trees grow?",
+            "documents": DOCUMENTS,
+            "top_k": 1,
+            "max_tokens": 64,
+        },
+        skill_root=SAMPLE_ROOT,
+        context=context,
+    )
+
+    assert result["answer"] == "Apples grow in orchards."
+    assert result["documents"][0]["id"] == "apple"
+    assert [event["step"] for event in result["trace"]] == [
+        "rewrite",
+        "retrieve",
+        "generate",
+    ]
+    assert "Where do apple trees grow?" in model.calls[0][0]
+    assert "Where do apple trees grow?" in model.calls[1][0]
+    assert "Apple trees grow fruit in orchards." in model.calls[1][0]
+    assert "imaginary lunar orchards" not in model.calls[1][0]
+
+
+def test_compiler_rejects_hyde_with_bm25_retriever() -> None:
+    """验证显式编译也会拒绝 HyDE 与 BM25 的错误组合。"""
+    context = RuntimeComponentContext(
+        executor_model=ScriptedExecutorModel([]),
+    )
+
+    with pytest.raises(
+        CompilationError,
+        match=(
+            "component-hyde-rewriter.*requires capability "
+            "'retriever'.*component-vector-retriever"
+        ),
+    ):
+        run_compiled_rag(
+            workflow="agentic-vanilla-rag",
+            bindings={
+                "rewriter": ["component-hyde-rewriter"],
+                "retriever": ["component-bm25-retriever"],
+                "reranker": [],
+                "generator": ["component-grounded-generator"],
+            },
+            request={"query": "Where?", "documents": DOCUMENTS},
+            skill_root=SAMPLE_ROOT,
+            context=context,
+        )
 
 
 def test_run_compiled_rag_executes_rrfusion_with_two_retrievers() -> None:
@@ -144,6 +216,7 @@ def test_compile_rag_command_rejects_incompatible_component_binding() -> None:
         agentic_skill=plan.agentic_skill,
         agentic_reason=plan.agentic_reason,
         component_bindings={
+            "rewriter": (),
             "retriever": ("component-grounded-generator",),
             "reranker": (),
             "generator": ("component-grounded-generator",),
@@ -167,6 +240,7 @@ def test_vector_component_requires_embedding_model_at_execution() -> None:
         run_compiled_rag(
             workflow="agentic-vanilla-rag",
             bindings={
+                "rewriter": [],
                 "retriever": ["component-vector-retriever"],
                 "reranker": [],
                 "generator": ["component-grounded-generator"],
@@ -196,6 +270,7 @@ def test_run_rag_is_one_call_from_selection_to_generated_answer() -> None:
             json.dumps(
                 {
                     "component_bindings": {
+                        "rewriter": [],
                         "retriever": ["component-bm25-retriever"],
                         "reranker": [],
                         "generator": ["component-grounded-generator"],
