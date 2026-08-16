@@ -3,6 +3,9 @@
 This workflow evaluates only candidate-document retrieval. It never calls the
 Manage, Agentic, Reranker, Generator, or DeepSeek layers.
 
+The completed experiment results and selected defaults are recorded in
+[RESULTS.md](RESULTS.md).
+
 ## 1. Create frozen training manifests
 
 ```powershell
@@ -37,7 +40,7 @@ python -m experiments.retrieval.run_bge_screening `
   --hotpot-manifest experiments/retrieval/outputs/tuning/manifests/hotpot-2000.json `
   --two-wiki-manifest experiments/retrieval/outputs/tuning/manifests/2wiki-2000.json `
   --output-dir experiments/retrieval/outputs/screening/bge `
-  --model BAAI/bge-large-en-v1.5 --device cuda --batch-size 16
+  --model BAAI/bge-large-en-v1.5 --device cuda --batch-size 8
 ```
 
 Variants are V0 raw-query/text-only, V1 instructed-query/text-only, and V2
@@ -45,8 +48,9 @@ instructed-query/title-plus-text.
 
 ## 4. Run frozen full comparisons
 
-Use `--variant B0`, `B1`, `B2`, or `B3` with `--retriever bm25`. Pass the frozen
-B3 values through `--k1`, `--b`, `--title-b`, and `--title-boost`.
+Use `--variant B0`, `B1`, `B2`, or `B3` with `--retriever bm25`. The command
+defaults to the frozen B3 values; pass `--k1`, `--b`, `--title-b`, and
+`--title-boost` to reproduce another variant explicitly.
 
 Use `--variant V0`, `V1`, or `V2` with `--retriever vector`. Full evaluation
 should compare V0 only with the improved variant frozen during screening.

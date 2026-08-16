@@ -4,7 +4,7 @@ import json
 
 from experiments.retrieval.benchmark import run_benchmark
 from experiments.retrieval.loading import DatasetItem, iter_huggingface_items
-from experiments.retrieval.retrievers import build_retriever
+from experiments.retrieval.retrievers import build_retriever, resolve_variant
 from experiments.retrieval.run_benchmark import build_parser, build_run_metadata
 from experiments.retrieval.sampling import build_manifest, write_manifest
 from experiments.retrieval.schema import RetrievalDocument, RetrievalExample
@@ -204,3 +204,30 @@ def test_bm25f_cli_options_define_run_identity_and_reach_component(tmp_path) -> 
         "body",
         "title",
     ]
+
+
+def test_retrieval_defaults_match_selected_configuration() -> None:
+    args = build_parser().parse_args(
+        ["--dataset", "hotpotqa", "--retriever", "bm25"]
+    )
+    metadata = build_run_metadata(args, code_commit="selected")
+    retriever = build_retriever("bm25")
+
+    assert resolve_variant("bm25", None) == "B3"
+    assert resolve_variant("vector", None) == "V2"
+    assert metadata["variant"] == "B3"
+    assert metadata["top_k"] == 10
+    assert metadata["parameters"] == {
+        "k1": 1.2,
+        "b": 0.5,
+        "title_b": 0.75,
+        "title_boost": 3.0,
+    }
+    assert args.batch_size == 8
+    assert retriever.name == "B3"
+    assert retriever.request_options == {
+        "k1": 1.2,
+        "b": 0.5,
+        "title_b": 0.75,
+        "title_boost": 3.0,
+    }

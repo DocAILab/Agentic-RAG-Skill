@@ -49,4 +49,3 @@ framework = [
 testpaths = ["tests"]
 pythonpath = ["."]
 addopts = "-q"
-asyncio_default_fixture_loop_scope = "function"

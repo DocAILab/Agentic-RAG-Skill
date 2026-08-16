@@ -14,6 +14,12 @@ from .schema import RetrievalExample
 
 COMPONENTS = Path(__file__).parents[2] / "framework" / "skills" / "components"
 BGE_QUERY_INSTRUCTION = "Represent this sentence for searching relevant passages:"
+DEFAULT_BM25_VARIANT = "B3"
+DEFAULT_BM25_K1 = 1.2
+DEFAULT_BM25_B = 0.5
+DEFAULT_BM25_TITLE_B = 0.75
+DEFAULT_BM25_TITLE_BOOST = 3.0
+DEFAULT_BGE_BATCH_SIZE = 8
 
 
 @dataclass(slots=True)
@@ -50,13 +56,13 @@ def build_retriever(
     name: str,
     *,
     variant: str | None = None,
-    k1: float = 1.5,
-    b: float = 0.75,
-    title_b: float | None = None,
-    title_boost: float = 1.5,
+    k1: float = DEFAULT_BM25_K1,
+    b: float = DEFAULT_BM25_B,
+    title_b: float | None = DEFAULT_BM25_TITLE_B,
+    title_boost: float = DEFAULT_BM25_TITLE_BOOST,
     model: str = "BAAI/bge-large-en-v1.5",
     device: str | None = None,
-    batch_size: int = 32,
+    batch_size: int = DEFAULT_BGE_BATCH_SIZE,
     embedding_model: EmbeddingClient | None = None,
 ) -> ComponentRetriever:
     normalized = name.strip().lower()
@@ -97,7 +103,7 @@ def build_retriever(
 
 def resolve_variant(retriever: str, variant: str | None) -> str:
     family = retriever.strip().lower()
-    default = {"bm25": "B2", "vector": "V2"}
+    default = {"bm25": DEFAULT_BM25_VARIANT, "vector": "V2"}
     allowed = {"bm25": {"B0", "B1", "B2", "B3"}, "vector": {"V0", "V1", "V2"}}
     if family not in default:
         raise ValueError(f"Unsupported retriever: {retriever}")

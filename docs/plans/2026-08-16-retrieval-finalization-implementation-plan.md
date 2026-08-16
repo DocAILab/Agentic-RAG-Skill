@@ -10,4 +10,3 @@
 5. Rebuild the ignored aggregate CSV from all six paired comparison files.
 6. Add `.idea/` to the repository ignore rules and remove the whitespace warning.
 7. Run the complete test suite and repository checks, then create a local commit.
-

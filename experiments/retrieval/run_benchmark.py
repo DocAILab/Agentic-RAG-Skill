@@ -9,7 +9,15 @@ from pathlib import Path
 
 from .benchmark import run_benchmark
 from .loading import iter_huggingface_items
-from .retrievers import build_retriever, resolve_variant
+from .retrievers import (
+    DEFAULT_BGE_BATCH_SIZE,
+    DEFAULT_BM25_B,
+    DEFAULT_BM25_K1,
+    DEFAULT_BM25_TITLE_B,
+    DEFAULT_BM25_TITLE_BOOST,
+    build_retriever,
+    resolve_variant,
+)
 from .sampling import iter_manifest_items, read_manifest
 
 
@@ -20,13 +28,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--dataset-config")
     parser.add_argument("--retriever", required=True, choices=("bm25", "vector"))
     parser.add_argument("--variant")
-    parser.add_argument("--k1", type=float, default=1.5)
-    parser.add_argument("--b", type=float, default=0.75)
-    parser.add_argument("--title-b", type=float)
-    parser.add_argument("--title-boost", type=float, default=1.5)
+    parser.add_argument("--k1", type=float, default=DEFAULT_BM25_K1)
+    parser.add_argument("--b", type=float, default=DEFAULT_BM25_B)
+    parser.add_argument("--title-b", type=float, default=DEFAULT_BM25_TITLE_B)
+    parser.add_argument(
+        "--title-boost", type=float, default=DEFAULT_BM25_TITLE_BOOST
+    )
     parser.add_argument("--model", default="BAAI/bge-large-en-v1.5")
     parser.add_argument("--device")
-    parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument("--batch-size", type=int, default=DEFAULT_BGE_BATCH_SIZE)
     parser.add_argument("--top-k", type=int, default=10)
     parser.add_argument("--checkpoint-every", type=int, default=100)
     parser.add_argument("--limit", type=int)

@@ -11,7 +11,7 @@ def run(inputs, context):
     """编码查询与文档，按余弦相似度返回前 top_k 个结果。"""
     query = str(inputs.get("query", "")).strip()
     documents = [dict(document) for document in inputs.get("documents", ())]
-    top_k = int(inputs.get("top_k", 3))
+    top_k = int(inputs.get("top_k", 10))
     if top_k <= 0 or not documents or not query:
         return {"documents": []}
 

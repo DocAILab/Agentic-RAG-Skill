@@ -1,43 +1,46 @@
-# Retrieval Skill 原框架兼容性验证设计
+# Retrieval framework compatibility test design
 
-## 目标
+## Goal
 
-验证修改后的 BM25F 与 BGE V2 Retrieval Components 能继续被原框架发现、绑定、调用和执行。该验证只证明接口与运行链路兼容，不重复检索效果实验，也不评价生成质量。
+Verify that the updated BM25F and BGE V2 retrieval components can still be
+discovered, selected, bound, called, and executed by the original framework.
+This test covers interface and execution compatibility. It does not repeat the
+retrieval-quality benchmark or evaluate answer generation quality.
 
-## 验证链路
+## Test path
 
-使用一条覆盖两个 Retrieval Components 的完整链路：
+Use one original RRFusion execution path:
 
 ```text
-RAGRequest
-  -> Manage Skill
-  -> Agentic RRFusion Skill
-  -> Component 选择与编译
-     -> BM25F Retriever
-     -> BGE V2 Retriever
-  -> RRFusion
-  -> Grounded Generator
-  -> RAGResult
+Manage selection
+  -> RRFusion Agentic Skill
+  -> BM25F Retriever
+  -> BGE V2 Retriever
+  -> reciprocal-rank fusion
+  -> existing Grounded Generator
 ```
 
-Manage、Agentic RRFusion、RRFusion 算法和 Grounded Generator 均使用原框架实现。测试使用固定模型响应驱动原选择流程，使用确定性的假向量服务替代外部 BGE 服务，并使用现有小型文档样本，避免网络、模型下载和生成 API 费用。
+The test uses scripted selection responses and a deterministic fake embedding
+service. It therefore requires no model download, API key, network call, or
+generation cost.
 
-## 验收标准
+## Assertions
 
-单个回归测试必须证明：
+1. The framework discovers the existing RRFusion Agentic Skill and both updated
+   Retriever Components.
+2. Component selection binds RRFusion, BM25F, BGE V2, and the existing Grounded
+   Generator without special-case code.
+3. Both retrievers receive the unchanged `RetrievalRequest` shape and return the
+   unchanged `RetrievalResult` shape.
+4. RRFusion combines the two ranked document lists and passes the fused evidence
+   to the existing generator.
+5. The final result contains a non-empty answer, documents, selection records,
+   and a `retrieve/fuse -> generate` trace.
 
-1. `run_rag()` 完整执行 Manage、Agentic 和 Component 选择阶段。
-2. 选择结果绑定 `agentic-rrfusion`、BM25F、BGE V2 和原 Grounded Generator。
-3. 两个 Retriever 接收兼容的 `RetrievalRequest` 并返回可融合的 `RetrievalResult`。
-4. RRFusion 输出排序文档，并将这些文档传给原 Grounded Generator。
-5. 最终结果包含非空 `answer`、排序后的 `documents`、选择记录、编译指令和 `retrieve/fuse -> generate` trace。
-6. 测试不访问网络，不加载真实 BGE 权重，不依赖 API key。
+## Scope limits
 
-## 范围外事项
-
-- 不运行 HotpotQA、2WikiMultihopQA 或 TriviaQA 完整实验。
-- 不重新选择参数或修改 Retrieval 默认参数。
-- 不比较 Hit、Recall、AllSupport、MRR、EM 或 F1。
-- 不修改 Manage、Agentic、Generator 或公共接口。
-- 不将该兼容性测试解释为端到端答案质量提升证据。
-
+- Do not run full HotpotQA, 2WikiMultihopQA, or TriviaQA experiments.
+- Do not ask the selection model to retune retrieval parameters.
+- Do not compare Hit, Recall, AllSupport, MRR, EM, or F1.
+- Do not modify Manage, Agentic, Generator, or public request/result interfaces.
+- Treat this as integration evidence only, not retrieval-quality evidence.

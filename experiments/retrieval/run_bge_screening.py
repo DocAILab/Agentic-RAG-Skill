@@ -12,7 +12,7 @@ from framework.models import SentenceTransformerEmbeddingClient
 
 from .loading import DatasetItem, iter_huggingface_items
 from .persistence import append_jsonl, iter_jsonl
-from .retrievers import build_retriever
+from .retrievers import DEFAULT_BGE_BATCH_SIZE, build_retriever
 from .sampling import iter_manifest_items, read_manifest
 from .scoring import score_example
 from .selection import STRONG_DATASETS, write_frozen_selection
@@ -125,7 +125,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--model", default="BAAI/bge-large-en-v1.5")
     parser.add_argument("--device")
-    parser.add_argument("--batch-size", type=int, default=32)
+    parser.add_argument("--batch-size", type=int, default=DEFAULT_BGE_BATCH_SIZE)
     parser.add_argument("--top-k", type=int, default=10)
     return parser
 

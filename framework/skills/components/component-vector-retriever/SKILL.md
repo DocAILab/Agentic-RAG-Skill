@@ -15,6 +15,10 @@ Input `RetrievalRequest`:
 - `documents`: JSON-compatible documents containing `id` and `text`
 - `top_k`: maximum returned documents
 
+The default is `top_k=10`. The runtime embedding configuration used for the
+validated BGE run uses `BAAI/bge-large-en-v1.5`, normalized vectors, and
+`batch_size=8`; callers may supply another compatible embedding service.
+
 Output `RetrievalResult`:
 
 - `documents`: ranked document dictionaries with cosine `score`

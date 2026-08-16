@@ -11,11 +11,11 @@ def run(inputs, context):
     del context
     query = str(inputs.get("query", ""))
     documents = [dict(document) for document in inputs.get("documents", ())]
-    top_k = int(inputs.get("top_k", 3))
-    k1 = float(inputs.get("k1", 1.5))
-    b = float(inputs.get("b", 0.75))
-    title_b = float(inputs.get("title_b", b))
-    title_boost = float(inputs.get("title_boost", 1.5))
+    top_k = int(inputs.get("top_k", 10))
+    k1 = float(inputs.get("k1", 1.2))
+    b = float(inputs.get("b", 0.5))
+    title_b = float(inputs.get("title_b", 0.75))
+    title_boost = float(inputs.get("title_boost", 3.0))
     if top_k <= 0 or not documents:
         return {"documents": []}
     _validate_parameters(k1, b, title_b, title_boost)

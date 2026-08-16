@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from experiments.retrieval.loading import DatasetItem
 from experiments.retrieval.performance import benchmark_batch_sizes
-from experiments.retrieval.run_bge_screening import run_screening
+from experiments.retrieval.run_bge_screening import build_parser, run_screening
 from experiments.retrieval.schema import RetrievalDocument, RetrievalExample
 
 BGE_INSTRUCTION = "Represent this sentence for searching relevant passages:"
@@ -74,3 +74,18 @@ def test_batch_benchmark_records_oom_without_failing_quality_run() -> None:
         "status": "oom",
         "error": "out of memory",
     }
+
+
+def test_bge_screening_defaults_to_measured_batch_size(tmp_path) -> None:
+    args = build_parser().parse_args(
+        [
+            "--hotpot-manifest",
+            str(tmp_path / "hotpot.json"),
+            "--two-wiki-manifest",
+            str(tmp_path / "2wiki.json"),
+            "--output-dir",
+            str(tmp_path / "output"),
+        ]
+    )
+
+    assert args.batch_size == 8

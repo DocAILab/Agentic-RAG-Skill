@@ -3,6 +3,8 @@
 For the frozen B0-B3/V0-V2 comparison, parameter tuning, and paired analysis
 workflow, see [EXPERIMENTS.md](EXPERIMENTS.md).
 
+For the selected defaults and full validation results, see [RESULTS.md](RESULTS.md).
+
 该入口直接评测 BM25 或 BGE-Large Component，不经过 Manage/Agentic/Generator，也不会调用 DeepSeek。每个问题只在数据集提供的候选文档中检索。
 
 ## 安装实验依赖
@@ -31,7 +33,7 @@ python -m experiments.retrieval.run_benchmark `
   --retriever vector `
   --model BAAI/bge-large-en-v1.5 `
   --device cuda `
-  --batch-size 16
+  --batch-size 8
 ```
 
 数据集名称还支持 `2wiki` 和 `triviaqa`。2Wiki 的 `validation` 自动映射到官方 `dev` split。可用 `--limit 10` 先做烟雾测试；显存不足时减小 `--batch-size` 或使用 `--device cpu`。

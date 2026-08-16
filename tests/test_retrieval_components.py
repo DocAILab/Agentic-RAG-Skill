@@ -59,6 +59,31 @@ def test_bm25_duplicate_query_terms_do_not_multiply_scores() -> None:
     assert repeated == once
 
 
+def test_bm25_defaults_match_selected_b3_configuration() -> None:
+    run = _component("component-bm25-retriever")
+    documents = [
+        {"id": str(index), "title": "orchid", "text": "reference"}
+        for index in range(4)
+    ]
+
+    default = run({"query": "orchid", "documents": documents}, object())
+    selected = run(
+        {
+            "query": "orchid",
+            "documents": documents,
+            "top_k": 10,
+            "k1": 1.2,
+            "b": 0.5,
+            "title_b": 0.75,
+            "title_boost": 3.0,
+        },
+        object(),
+    )
+
+    assert default == selected
+    assert len(default["documents"]) == 4
+
+
 def test_bm25f_normalizes_title_and_body_lengths_independently() -> None:
     run = _component("component-bm25-retriever")
     result = run(

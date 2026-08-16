@@ -45,4 +45,3 @@ parameter behavior changes to the experimentally selected defaults.
 - Run `git diff --check`.
 - Confirm benchmark outputs remain ignored and `.idea/` is ignored.
 - Confirm the aggregate table includes all six full paired comparisons.
-
