@@ -226,3 +226,71 @@ def test_run_rag_is_one_call_from_selection_to_generated_answer() -> None:
     ]
     assert result["compiled_instruction"].startswith("run_compiled_rag(")
     assert len(model.calls) == 4
+
+
+def test_run_rag_executes_modified_retrievers_in_original_rrfusion_chain() -> None:
+    """验证原框架可选择、绑定并执行修改后的两种 Retriever。"""
+    model = ScriptedExecutorModel(
+        [
+            json.dumps(
+                {
+                    "agentic_selection_guidance": (
+                        "Use complementary lexical and semantic retrieval routes."
+                    ),
+                    "reason": "The compatibility check requires both retrievers.",
+                }
+            ),
+            json.dumps(
+                {
+                    "selected_agentic_skill": "agentic-rrfusion",
+                    "reason": "RRFusion executes and combines both retrieval routes.",
+                }
+            ),
+            json.dumps(
+                {
+                    "component_bindings": {
+                        "retrievers": [
+                            "component-bm25-retriever",
+                            "component-vector-retriever",
+                        ],
+                        "reranker": [],
+                        "generator": ["component-grounded-generator"],
+                    },
+                    "reason": "Bind both modified retrievers to the original workflow.",
+                }
+            ),
+            "Apples grow in orchards.",
+        ]
+    )
+
+    result = run_rag(
+        {
+            "query": "Where do apple trees grow fruit?",
+            "documents": DOCUMENTS,
+            "top_k": 2,
+            "max_tokens": 64,
+        },
+        model=model,
+        embedding_model=KeywordEmbeddingModel(),
+        skill_root=SAMPLE_ROOT,
+    )
+
+    assert result["answer"] == "Apples grow in orchards."
+    assert result["documents"][0]["id"] == "apple"
+    assert result["selection"]["agentic_skill"] == "agentic-rrfusion"
+    assert result["selection"]["component_bindings"]["retrievers"] == [
+        "component-bm25-retriever",
+        "component-vector-retriever",
+    ]
+    assert result["trace"] == [
+        {
+            "step": "parallel_retrieve_and_fuse",
+            "branch_count": 2,
+            "document_count": 2,
+        },
+        {"step": "generate"},
+    ]
+    assert "component-bm25-retriever" in result["compiled_instruction"]
+    assert "component-vector-retriever" in result["compiled_instruction"]
+    assert "Apple trees grow fruit" in model.calls[-1][0]
+    assert len(model.calls) == 4

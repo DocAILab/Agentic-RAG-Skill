@@ -79,5 +79,5 @@ embedding:
   # device=null 自动选择设备；显存不足可减小 batch_size；归一化适合余弦相似度检索。
   options:
     device: null
-    batch_size: 32
+    batch_size: 8
     normalize_embeddings: true

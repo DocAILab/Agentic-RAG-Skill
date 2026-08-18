@@ -2,6 +2,7 @@
 # Generated from the active project environment on 2026-08-07.
 numpy==2.1.3
 PyYAML==6.0.2
+datasets==5.0.1
 pyarrow==23.0.0
 sentence-transformers==5.1.1
 torch==2.7.1

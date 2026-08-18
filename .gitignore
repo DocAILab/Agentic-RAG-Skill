@@ -14,3 +14,4 @@ models/
 cache/
 outputs/
 /framework/settings.yaml
+.idea/

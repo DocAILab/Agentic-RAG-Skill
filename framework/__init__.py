@@ -26,6 +26,7 @@ from .evaluation import (
     EvaluationExample,
     EvaluationSummary,
     ExampleMetrics,
+    all_support_at_k,
     evaluate_batch,
     evaluate_example,
     evaluate_rag_result,
@@ -35,6 +36,8 @@ from .evaluation import (
     hit_at_10,
     hit_at_k,
     normalize_answer,
+    recall_at_k,
+    reciprocal_rank,
 )
 from .models import (
     AnthropicModelClient,
@@ -116,6 +119,9 @@ __all__ = [
     "hit_at_1",
     "hit_at_10",
     "hit_at_k",
+    "all_support_at_k",
+    "recall_at_k",
+    "reciprocal_rank",
     "normalize_answer",
     "create_embedding_client",
     "create_clients_from_config",

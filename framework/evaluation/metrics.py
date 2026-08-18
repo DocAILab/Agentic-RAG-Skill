@@ -53,6 +53,47 @@ def hit_at_10(
     return hit_at_k(retrieved_ids, relevant_ids, 10)
 
 
+def recall_at_k(
+    retrieved_ids: Sequence[Hashable],
+    relevant_ids: Collection[Hashable],
+    k: int,
+) -> float:
+    """计算前 k 个结果覆盖的相关文档比例。"""
+    _validate_rank_inputs(retrieved_ids, relevant_ids, k)
+    relevant = set(relevant_ids)
+    if not relevant:
+        return 0.0
+    retrieved = set(islice(retrieved_ids, k))
+    return len(retrieved & relevant) / len(relevant)
+
+
+def all_support_at_k(
+    retrieved_ids: Sequence[Hashable],
+    relevant_ids: Collection[Hashable],
+    k: int,
+) -> float:
+    """判断前 k 个结果是否覆盖全部多跳支持文档。"""
+    _validate_rank_inputs(retrieved_ids, relevant_ids, k)
+    relevant = set(relevant_ids)
+    if not relevant:
+        return 0.0
+    return float(relevant <= set(islice(retrieved_ids, k)))
+
+
+def reciprocal_rank(
+    retrieved_ids: Sequence[Hashable],
+    relevant_ids: Collection[Hashable],
+) -> float:
+    """返回第一个相关文档名次的倒数，未命中时返回零。"""
+    _validate_identifier_collection(retrieved_ids, name="retrieved_ids")
+    _validate_identifier_collection(relevant_ids, name="relevant_ids")
+    relevant = set(relevant_ids)
+    for rank, identifier in enumerate(retrieved_ids, start=1):
+        if identifier in relevant:
+            return 1.0 / rank
+    return 0.0
+
+
 def exact_match_score(
     prediction: str,
     gold_answers: str | Sequence[str],
@@ -127,3 +168,10 @@ def _validate_identifier_collection(
         raise TypeError(f"{name} must be a collection of identifiers")
     if not all(isinstance(identifier, Hashable) for identifier in identifiers):
         raise TypeError(f"{name} must contain only hashable identifiers")
+
+
+def _validate_rank_inputs(retrieved_ids, relevant_ids, k):
+    if isinstance(k, bool) or not isinstance(k, int) or k < 1:
+        raise ValueError("k must be a positive integer")
+    _validate_identifier_collection(retrieved_ids, name="retrieved_ids")
+    _validate_identifier_collection(relevant_ids, name="relevant_ids")

@@ -6,15 +6,15 @@ from pathlib import Path
 import pytest
 
 from framework import (
-    AnthropicModelClient,
     AgenticStageResult,
+    AnthropicModelClient,
     ManageStageResult,
     OpenAICompatibleEmbeddingClient,
     OpenAICompatibleModelClient,
-    SentenceTransformerEmbeddingClient,
     SelectionError,
-    create_model_client,
+    SentenceTransformerEmbeddingClient,
     create_embedding_client,
+    create_model_client,
     discover_specs,
     run_manage_stage,
     select_agentic_skill,
@@ -306,13 +306,16 @@ def test_component_stage_advertises_then_loads_only_selected_skills() -> None:
         "component-bm25-retriever",
         "component-grounded-generator",
     }
-    assert "# BM25 Retriever Component" in result.instructions[
+    assert "# BM25F Retriever Component" in result.instructions[
         "component-bm25-retriever"
     ]
     prompt = model.calls[0][0]
     assert "# Vanilla RAG Workflow" in prompt
-    assert "Retrieve and rank documents with a concrete Okapi BM25" in prompt
-    assert "# BM25 Retriever Component" not in prompt
+    assert (
+        "Retrieve and rank title-and-text documents with a field-aware BM25F"
+        in prompt
+    )
+    assert "# BM25F Retriever Component" not in prompt
     assert "# Grounded Generator Component" not in prompt
 
 
@@ -364,8 +367,11 @@ def test_select_rag_plan_calls_model_with_strict_progressive_disclosure() -> Non
     assert "Arrange a sequential RAG workflow" in agentic_prompt
     assert "# Vanilla RAG Workflow" not in agentic_prompt
     assert "# Vanilla RAG Workflow" in component_prompt
-    assert "Retrieve and rank documents with a concrete Okapi BM25" in component_prompt
-    assert "# BM25 Retriever Component" not in component_prompt
+    assert (
+        "Retrieve and rank title-and-text documents with a field-aware BM25F"
+        in component_prompt
+    )
+    assert "# BM25F Retriever Component" not in component_prompt
     assert all(call[2:] == (0.0, 512) for call in model.calls)
 
 
