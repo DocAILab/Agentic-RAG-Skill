@@ -62,6 +62,7 @@ from .selection import (
     select_rag_plan,
 )
 from .spec import (
+    CapabilityRequirementSpec,
     CapabilitySpec,
     RAGSkillSpec,
     RuntimeSpec,
@@ -76,6 +77,7 @@ from .spec import (
 
 __all__ = [
     "APIServiceConfig",
+    "CapabilityRequirementSpec",
     "CapabilitySpec",
     "AgenticStageResult",
     "BoundComponentInvoker",

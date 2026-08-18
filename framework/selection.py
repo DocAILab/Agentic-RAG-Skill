@@ -9,7 +9,13 @@ from pathlib import Path
 from typing import Any
 
 from .models import ModelClient
-from .spec import RAGSkillSpec, SkillKind, SlotSpec, discover_specs
+from .spec import (
+    RAGSkillSpec,
+    SkillKind,
+    SlotSpec,
+    binding_requirement_errors,
+    discover_specs,
+)
 
 
 class SelectionError(ValueError):
@@ -198,6 +204,16 @@ def select_component_skills(
         agentic.slots,
         slot_candidates,
     )
+    component_by_name = {
+        spec.package_name: spec for spec in component_specs
+    }
+    requirement_errors = binding_requirement_errors(
+        agentic,
+        bindings,
+        component_by_name,
+    )
+    if requirement_errors:
+        raise SelectionError(requirement_errors[0])
     selected_names = {name for names in bindings.values() for name in names}
     instructions = {
         name: _read_skill_document(

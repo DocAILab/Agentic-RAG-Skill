@@ -16,6 +16,7 @@ from .spec import (
     SkillKind,
     SkillSpecError,
     SlotSpec,
+    binding_requirement_errors,
     discover_specs,
     load_runtime_callable,
     load_spec,
@@ -258,6 +259,14 @@ def _compile_selected(
             functions.append(function)
         normalized_bindings[slot.name] = names
         callable_bindings[slot.name] = tuple(functions)
+
+    requirement_errors = binding_requirement_errors(
+        workflow_spec,
+        normalized_bindings,
+        component_metadata,
+    )
+    if requirement_errors:
+        raise CompilationError(requirement_errors[0])
 
     return CompiledRAGCommand(
         workflow_name=workflow_spec.package_name,

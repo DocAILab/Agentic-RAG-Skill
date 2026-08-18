@@ -284,6 +284,7 @@ def test_component_stage_advertises_then_loads_only_selected_skills() -> None:
             json.dumps(
                 {
                     "component_bindings": {
+                        "rewriter": [],
                         "retriever": ["component-bm25-retriever"],
                         "reranker": [],
                         "generator": ["component-grounded-generator"],
@@ -319,6 +320,50 @@ def test_component_stage_advertises_then_loads_only_selected_skills() -> None:
     assert "# Grounded Generator Component" not in prompt
 
 
+def test_component_stage_rejects_hyde_with_bm25_retriever() -> None:
+    """验证 Component 选择阶段拒绝 HyDE 与 BM25 的错误组合。"""
+    specs = discover_specs(SAMPLE_ROOT, validate_runtime=False)
+    agentic = next(
+        spec for spec in specs if spec.package_name == "agentic-vanilla-rag"
+    )
+    agentic_result = AgenticStageResult(
+        spec=agentic,
+        instructions=(agentic.package_path / "SKILL.md").read_text(
+            encoding="utf-8"
+        ),
+        reason="Sequential retrieval is sufficient.",
+        advertised_skills=("agentic-rrfusion", "agentic-vanilla-rag"),
+    )
+    model = ScriptedModel(
+        [
+            json.dumps(
+                {
+                    "component_bindings": {
+                        "rewriter": ["component-hyde-rewriter"],
+                        "retriever": ["component-bm25-retriever"],
+                        "reranker": [],
+                        "generator": ["component-grounded-generator"],
+                    }
+                }
+            )
+        ]
+    )
+
+    with pytest.raises(
+        SelectionError,
+        match=(
+            "component-hyde-rewriter.*requires capability "
+            "'retriever'.*component-vector-retriever"
+        ),
+    ):
+        select_component_skills(
+            {"query": "Where?"},
+            agentic_result=agentic_result,
+            model=model,
+            skill_root=SAMPLE_ROOT,
+        )
+
+
 def test_select_rag_plan_calls_model_with_strict_progressive_disclosure() -> None:
     """验证三级选择真实调用模型且每一阶段只披露允许的信息。"""
     model = ScriptedModel(
@@ -338,6 +383,7 @@ def test_select_rag_plan_calls_model_with_strict_progressive_disclosure() -> Non
             json.dumps(
                 {
                     "component_bindings": {
+                        "rewriter": [],
                         "retriever": ["component-bm25-retriever"],
                         "reranker": [],
                         "generator": ["component-grounded-generator"],
@@ -356,6 +402,7 @@ def test_select_rag_plan_calls_model_with_strict_progressive_disclosure() -> Non
 
     assert plan.agentic_skill == "agentic-vanilla-rag"
     assert plan.component_bindings == {
+        "rewriter": (),
         "retriever": ("component-bm25-retriever",),
         "reranker": (),
         "generator": ("component-grounded-generator",),
@@ -384,6 +431,7 @@ def test_select_rag_plan_rejects_incompatible_component_choice() -> None:
             json.dumps(
                 {
                     "component_bindings": {
+                        "rewriter": [],
                         "retriever": ["component-grounded-generator"],
                         "reranker": [],
                         "generator": ["component-grounded-generator"],

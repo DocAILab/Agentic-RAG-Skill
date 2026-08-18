@@ -40,9 +40,10 @@ class FakeComponents:
 
 
 class FakeContext:
-    def __init__(self):
+    def __init__(self, model_response="Apples grow in orchards."):
         """初始化用于断言模型调用内容的提示词记录。"""
         self.prompts = []
+        self.model_response = model_response
 
     def embed(self, texts):
         """根据关键词生成确定性测试向量。"""
@@ -58,7 +59,7 @@ class FakeContext:
     def call_model(self, prompt, *, temperature=0.0, max_tokens=None):
         """记录生成参数并返回固定测试答案。"""
         self.prompts.append((prompt, temperature, max_tokens))
-        return "Apples grow in orchards."
+        return self.model_response
 
 
 def _specs_by_name():
@@ -67,13 +68,13 @@ def _specs_by_name():
 
 
 def test_sample_repository_has_three_strict_skill_levels() -> None:
-    """验证样例仓库严格包含三层共七个 Skill。"""
+    """验证样例仓库严格包含三层共八个 Skill。"""
     specs = tuple(discover_specs(SAMPLE_ROOT))
 
-    assert len(specs) == 7
+    assert len(specs) == 8
     assert sum(spec.kind is SkillKind.MANAGE for spec in specs) == 1
     assert sum(spec.kind is SkillKind.AGENTIC for spec in specs) == 2
-    assert sum(spec.kind is SkillKind.COMPONENT for spec in specs) == 4
+    assert sum(spec.kind is SkillKind.COMPONENT for spec in specs) == 5
 
 
 def test_skill_packages_are_grouped_by_declared_kind() -> None:
@@ -130,6 +131,15 @@ def test_required_agentic_slots_have_compatible_component_samples() -> None:
             assert len(compatible) >= slot.min_count
 
 
+def test_hyde_declares_vector_retriever_requirement() -> None:
+    """验证 HyDE manifest 声明必须搭配 Vector Retriever。"""
+    hyde = _specs_by_name()["component-hyde-rewriter"]
+
+    assert len(hyde.requires) == 1
+    assert hyde.requires[0].capability == "retriever"
+    assert hyde.requires[0].components == ("component-vector-retriever",)
+
+
 def test_agentic_scripts_only_arrange_abstract_component_calls() -> None:
     """验证 Agentic 脚本不导入任何具体 Component 实现。"""
     for spec in discover_specs(SAMPLE_ROOT):
@@ -164,6 +174,81 @@ def test_vanilla_workflow_calls_retriever_then_generator() -> None:
     assert [call[0] for call in components.calls] == ["retriever", "generator"]
 
 
+def test_vanilla_workflow_uses_hyde_only_for_retrieval() -> None:
+    """验证 HyDE 改写只进入检索器，后续组件仍使用原始问题。"""
+    workflow = load_runtime_callable(_specs_by_name()["agentic-vanilla-rag"])
+    original_query = "Where do apples grow?"
+    hypothetical_document = "Apple trees grow in temperate orchards."
+    components = FakeComponents(
+        {
+            "rewriter": [
+                lambda inputs: {"rewritten_query": hypothetical_document}
+            ],
+            "retriever": [
+                lambda inputs: {"documents": [DOCUMENTS[0]]}
+            ],
+            "reranker": [
+                lambda inputs: {"documents": list(inputs["documents"])}
+            ],
+            "generator": [lambda inputs: {"answer": "orchards"}],
+        }
+    )
+
+    result = workflow(
+        {
+            "query": original_query,
+            "documents": DOCUMENTS,
+            "top_k": 1,
+            "rewrite_temperature": 0.25,
+            "rewrite_max_tokens": 96,
+        },
+        components,
+    )
+
+    calls = {slot: inputs for slot, _, inputs in components.calls}
+    assert result["answer"] == "orchards"
+    assert [call[0] for call in components.calls] == [
+        "rewriter",
+        "retriever",
+        "reranker",
+        "generator",
+    ]
+    assert calls["rewriter"]["query"] == original_query
+    assert calls["rewriter"]["temperature"] == 0.25
+    assert calls["rewriter"]["max_tokens"] == 96
+    assert calls["retriever"]["query"] == hypothetical_document
+    assert calls["reranker"]["query"] == original_query
+    assert calls["generator"]["query"] == original_query
+
+
+@pytest.mark.parametrize(
+    "rewriter_result",
+    [
+        {},
+        {"rewritten_query": None},
+        {"rewritten_query": "   "},
+    ],
+)
+def test_vanilla_workflow_rejects_invalid_rewriter_result(
+    rewriter_result,
+) -> None:
+    """验证 workflow 拒绝缺失、非字符串或空白的改写结果。"""
+    workflow = load_runtime_callable(_specs_by_name()["agentic-vanilla-rag"])
+    components = FakeComponents(
+        {
+            "rewriter": [lambda inputs: rewriter_result],
+            "retriever": [lambda inputs: {"documents": []}],
+            "generator": [lambda inputs: {"answer": "unused"}],
+        }
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Rewriter must return a non-empty rewritten_query",
+    ):
+        workflow({"query": "Where?"}, components)
+
+
 def test_rrfusion_workflow_calls_two_retrievers_and_fuses_results() -> None:
     """验证 RRFusion 调用两路检索器并正确融合重复结果。"""
     workflow = load_runtime_callable(_specs_by_name()["agentic-rrfusion"])
@@ -192,13 +277,14 @@ def test_rrfusion_workflow_calls_two_retrievers_and_fuses_results() -> None:
 
 
 def test_component_samples_have_concrete_executable_implementations() -> None:
-    """验证三个既有 Component 样例仍提供可直接执行的具体实现。"""
+    """验证 Component 样例提供可直接执行的具体实现。"""
     specs = _specs_by_name()
     context = FakeContext()
 
     bm25 = load_runtime_callable(specs["component-bm25-retriever"])
     vector = load_runtime_callable(specs["component-vector-retriever"])
     generator = load_runtime_callable(specs["component-grounded-generator"])
+    hyde = load_runtime_callable(specs["component-hyde-rewriter"])
 
     assert bm25(
         {"query": "yellow banana", "documents": DOCUMENTS, "top_k": 1},
@@ -213,3 +299,95 @@ def test_component_samples_have_concrete_executable_implementations() -> None:
         context,
     )["answer"] == "Apples grow in orchards."
     assert "Apple trees grow" in context.prompts[0][0]
+    assert hyde(
+        {"query": "Where do apples grow?", "temperature": 0.0, "max_tokens": 64},
+        context,
+    )["rewritten_query"] == "Apples grow in orchards."
+    assert "Where do apples grow?" in context.prompts[1][0]
+
+
+def test_hyde_requires_query_field() -> None:
+    """验证 HyDE 的 RewriteRequest 必须包含 query。"""
+    hyde = load_runtime_callable(_specs_by_name()["component-hyde-rewriter"])
+
+    with pytest.raises(KeyError, match="query"):
+        hyde({}, FakeContext())
+
+
+@pytest.mark.parametrize("query", ["", "   ", "\n\t"])
+def test_hyde_rejects_empty_query(query) -> None:
+    """验证 HyDE 拒绝空字符串和仅含空白的查询。"""
+    hyde = load_runtime_callable(_specs_by_name()["component-hyde-rewriter"])
+
+    with pytest.raises(ValueError, match="non-empty query"):
+        hyde({"query": query}, FakeContext())
+
+
+@pytest.mark.parametrize("temperature", [-0.1, -1])
+def test_hyde_rejects_negative_temperature(temperature) -> None:
+    """验证 HyDE 的生成温度不能为负数。"""
+    hyde = load_runtime_callable(_specs_by_name()["component-hyde-rewriter"])
+
+    with pytest.raises(ValueError, match="temperature must be non-negative"):
+        hyde(
+            {"query": "Where?", "temperature": temperature},
+            FakeContext(),
+        )
+
+
+@pytest.mark.parametrize("max_tokens", [0, -1])
+def test_hyde_rejects_non_positive_max_tokens(max_tokens) -> None:
+    """验证 HyDE 的最大生成长度必须为正数。"""
+    hyde = load_runtime_callable(_specs_by_name()["component-hyde-rewriter"])
+
+    with pytest.raises(ValueError, match="max_tokens must be positive"):
+        hyde(
+            {"query": "Where?", "max_tokens": max_tokens},
+            FakeContext(),
+        )
+
+
+@pytest.mark.parametrize(
+    "optional_inputs",
+    [
+        {},
+        {"temperature": None, "max_tokens": None},
+    ],
+)
+def test_hyde_uses_defaults_and_calls_model_once(optional_inputs) -> None:
+    """验证缺失或为 null 的可选参数使用默认值且只调用一次模型。"""
+    hyde = load_runtime_callable(_specs_by_name()["component-hyde-rewriter"])
+    context = FakeContext()
+
+    result = hyde(
+        {"query": "  Where do apples grow?  ", **optional_inputs},
+        context,
+    )
+
+    assert result == {"rewritten_query": "Apples grow in orchards."}
+    assert len(context.prompts) == 1
+    prompt, temperature, max_tokens = context.prompts[0]
+    assert "Question: Where do apples grow?" in prompt
+    assert temperature == 0.0
+    assert max_tokens == 256
+
+
+def test_hyde_accepts_minimum_positive_max_tokens() -> None:
+    """验证 max_tokens=1 是允许的最小正整数边界。"""
+    hyde = load_runtime_callable(_specs_by_name()["component-hyde-rewriter"])
+    context = FakeContext()
+
+    hyde(
+        {"query": "Where?", "temperature": 0.0, "max_tokens": 1},
+        context,
+    )
+
+    assert context.prompts[0][1:] == (0.0, 1)
+
+
+def test_hyde_rejects_empty_model_output() -> None:
+    """验证模型生成空白内容时 HyDE 不返回无效 RewriteResult。"""
+    hyde = load_runtime_callable(_specs_by_name()["component-hyde-rewriter"])
+
+    with pytest.raises(ValueError, match="empty hypothetical document"):
+        hyde({"query": "Where?"}, FakeContext("  \n"))

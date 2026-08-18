@@ -1,0 +1,4 @@
+interface:
+  display_name: "HyDE Rewriter"
+  short_description: "Generate hypothetical documents for retrieval"
+  default_prompt: "Use $component-hyde-rewriter to create a hypothetical document for semantic retrieval."
