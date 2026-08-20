@@ -1,0 +1,13 @@
+schema_version: 1
+runtime_id: component.quality.critic
+kind: component
+version: 0.1.0
+mutable: false
+runtime:
+  type: python-component
+  path: scripts/component.py
+  callable: run
+provides:
+  critic:
+    input: CritiqueRequest
+    output: CritiqueResult
