@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -19,6 +20,18 @@ JsonTransport = Callable[
 
 class ModelAPIError(RuntimeError):
     """表示模型 API 请求失败或响应结构不合法。"""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        retryable: bool = False,
+    ) -> None:
+        """保存错误消息以及供请求层判断的 HTTP 状态与可重试标记。"""
+        super().__init__(message)
+        self.status_code = status_code
+        self.retryable = retryable
 
 
 class ModelClient(Protocol):
@@ -54,7 +67,10 @@ class OpenAICompatibleModelClient:
         repr=False,
     )
     base_url: str = "https://api.openai.com/v1"
-    timeout_seconds: float = 120.0
+    default_max_tokens: int = 8192
+    timeout_seconds: float = 600.0
+    max_retries: int = 2
+    retry_backoff_seconds: float = 2.0
     extra_headers: Mapping[str, str] = field(default_factory=dict)
     transport: JsonTransport | None = field(default=None, repr=False)
 
@@ -62,8 +78,9 @@ class OpenAICompatibleModelClient:
         """补充默认 HTTP transport，并校验基础配置。"""
         if not self.model.strip():
             raise ValueError("model cannot be empty")
-        if self.timeout_seconds <= 0:
-            raise ValueError("timeout_seconds must be positive")
+        if self.default_max_tokens <= 0 or self.timeout_seconds <= 0:
+            raise ValueError("token and timeout limits must be positive")
+        _validate_retry_options(self.max_retries, self.retry_backoff_seconds)
         if self.transport is None:
             self.transport = _post_json
 
@@ -84,18 +101,22 @@ class OpenAICompatibleModelClient:
             "model": self.model,
             "messages": messages,
             "temperature": temperature,
+            "max_tokens": (
+                max_tokens if max_tokens is not None else self.default_max_tokens
+            ),
         }
-        if max_tokens is not None:
-            payload["max_tokens"] = max_tokens
         headers = {"content-type": "application/json", **self.extra_headers}
         if self.api_key:
             headers["authorization"] = f"Bearer {self.api_key}"
         assert self.transport is not None
-        response = self.transport(
+        response = _request_json_with_retries(
+            self.transport,
             _endpoint(self.base_url, "chat/completions"),
             headers,
             payload,
             self.timeout_seconds,
+            max_retries=self.max_retries,
+            retry_backoff_seconds=self.retry_backoff_seconds,
         )
         return _extract_openai_text(response)
 
@@ -110,7 +131,9 @@ class OpenAICompatibleEmbeddingClient:
         repr=False,
     )
     base_url: str = "https://api.openai.com/v1"
-    timeout_seconds: float = 120.0
+    timeout_seconds: float = 600.0
+    max_retries: int = 2
+    retry_backoff_seconds: float = 2.0
     extra_headers: Mapping[str, str] = field(default_factory=dict)
     transport: JsonTransport | None = field(default=None, repr=False)
 
@@ -120,6 +143,7 @@ class OpenAICompatibleEmbeddingClient:
             raise ValueError("model cannot be empty")
         if self.timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive")
+        _validate_retry_options(self.max_retries, self.retry_backoff_seconds)
         if self.transport is None:
             self.transport = _post_json
 
@@ -132,11 +156,14 @@ class OpenAICompatibleEmbeddingClient:
         if self.api_key:
             headers["authorization"] = f"Bearer {self.api_key}"
         assert self.transport is not None
-        response = self.transport(
+        response = _request_json_with_retries(
+            self.transport,
             _endpoint(self.base_url, "embeddings"),
             headers,
             {"model": self.model, "input": normalized},
             self.timeout_seconds,
+            max_retries=self.max_retries,
+            retry_backoff_seconds=self.retry_backoff_seconds,
         )
         return _extract_openai_embeddings(response, expected_count=len(normalized))
 
@@ -215,8 +242,10 @@ class AnthropicModelClient:
     )
     base_url: str = "https://api.anthropic.com"
     api_version: str = "2023-06-01"
-    default_max_tokens: int = 1024
-    timeout_seconds: float = 120.0
+    default_max_tokens: int = 8192
+    timeout_seconds: float = 600.0
+    max_retries: int = 2
+    retry_backoff_seconds: float = 2.0
     extra_headers: Mapping[str, str] = field(default_factory=dict)
     transport: JsonTransport | None = field(default=None, repr=False)
 
@@ -228,6 +257,7 @@ class AnthropicModelClient:
             raise ValueError("Anthropic API requires api_key or ANTHROPIC_API_KEY")
         if self.default_max_tokens <= 0 or self.timeout_seconds <= 0:
             raise ValueError("token and timeout limits must be positive")
+        _validate_retry_options(self.max_retries, self.retry_backoff_seconds)
         if self.transport is None:
             self.transport = _post_json
 
@@ -257,11 +287,14 @@ class AnthropicModelClient:
             **self.extra_headers,
         }
         assert self.transport is not None
-        response = self.transport(
+        response = _request_json_with_retries(
+            self.transport,
             _endpoint(self.base_url, "v1/messages"),
             headers,
             payload,
             self.timeout_seconds,
+            max_retries=self.max_retries,
+            retry_backoff_seconds=self.retry_backoff_seconds,
         )
         return _extract_anthropic_text(response)
 
@@ -328,6 +361,43 @@ def _endpoint(base_url: str, path: str) -> str:
     return f"{base_url.rstrip('/')}/{path.lstrip('/')}"
 
 
+def _validate_retry_options(max_retries: int, retry_backoff_seconds: float) -> None:
+    """校验重试次数和指数退避初始等待时间。"""
+    if isinstance(max_retries, bool) or not isinstance(max_retries, int):
+        raise ValueError("max_retries must be a non-negative integer")
+    if max_retries < 0:
+        raise ValueError("max_retries must be a non-negative integer")
+    if (
+        isinstance(retry_backoff_seconds, bool)
+        or not isinstance(retry_backoff_seconds, (int, float))
+        or retry_backoff_seconds < 0
+    ):
+        raise ValueError("retry_backoff_seconds must be non-negative")
+
+
+def _request_json_with_retries(
+    transport: JsonTransport,
+    url: str,
+    headers: Mapping[str, str],
+    payload: Mapping[str, Any],
+    timeout_seconds: float,
+    *,
+    max_retries: int,
+    retry_backoff_seconds: float,
+) -> Mapping[str, Any]:
+    """对临时网络和上游服务错误执行有限次数的指数退避重试。"""
+    for attempt in range(max_retries + 1):
+        try:
+            return transport(url, headers, payload, timeout_seconds)
+        except ModelAPIError as exc:
+            if not exc.retryable or attempt >= max_retries:
+                raise
+            delay = retry_backoff_seconds * (2**attempt)
+            if delay > 0:
+                time.sleep(delay)
+    raise AssertionError("unreachable retry loop")
+
+
 def _post_json(
     url: str,
     headers: Mapping[str, str],
@@ -346,9 +416,17 @@ def _post_json(
             body = response.read().decode("utf-8")
     except HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
-        raise ModelAPIError(f"Model API returned HTTP {exc.code}: {detail}") from exc
+        retryable = exc.code in {408, 425, 429} or 500 <= exc.code <= 599
+        raise ModelAPIError(
+            f"Model API returned HTTP {exc.code}: {detail}",
+            status_code=exc.code,
+            retryable=retryable,
+        ) from exc
     except (URLError, TimeoutError, OSError) as exc:
-        raise ModelAPIError(f"Model API request failed: {exc}") from exc
+        raise ModelAPIError(
+            f"Model API request failed: {exc}",
+            retryable=True,
+        ) from exc
     try:
         decoded = json.loads(body)
     except json.JSONDecodeError as exc:
@@ -361,10 +439,27 @@ def _post_json(
 def _extract_openai_text(response: Mapping[str, Any]) -> str:
     """从 OpenAI Chat Completions 响应中提取文本内容。"""
     try:
-        content = response["choices"][0]["message"]["content"]
+        choice = response["choices"][0]
+        message = choice["message"]
+        content = message["content"]
     except (KeyError, IndexError, TypeError) as exc:
         raise ModelAPIError("Invalid OpenAI-compatible response structure") from exc
-    return _content_to_text(content, provider="OpenAI-compatible")
+    try:
+        return _content_to_text(content, provider="OpenAI-compatible")
+    except ModelAPIError as exc:
+        reasoning_content = (
+            message.get("reasoning_content") if isinstance(message, Mapping) else None
+        )
+        reasoning_characters = (
+            len(reasoning_content) if isinstance(reasoning_content, str) else 0
+        )
+        finish_reason = choice.get("finish_reason") if isinstance(choice, Mapping) else None
+        raise ModelAPIError(
+            "OpenAI-compatible response contains no final text "
+            f"(finish_reason={finish_reason!r}, "
+            f"reasoning_content_characters={reasoning_characters}); "
+            "increase max_tokens or disable reasoning for this model"
+        ) from exc
 
 
 def _extract_openai_embeddings(

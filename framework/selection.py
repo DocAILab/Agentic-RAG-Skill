@@ -17,6 +17,8 @@ from .spec import (
     discover_specs,
 )
 
+SELECTION_MAX_TOKENS = 8192
+
 
 class SelectionError(ValueError):
     """表示模型输出或候选绑定不符合分级选择契约。"""
@@ -290,11 +292,50 @@ def _read_skill_document(spec: RAGSkillSpec) -> str:
 
 
 def _encode_request(request: Mapping[str, Any]) -> str:
-    """将 RAG 请求编码为稳定且可读的 JSON 文本。"""
+    """将不含完整语料正文的 RAG 选择摘要编码为稳定 JSON。"""
+    selection_request = _build_selection_request(request)
     try:
-        return json.dumps(request, ensure_ascii=False, indent=2, sort_keys=True)
+        return json.dumps(
+            selection_request,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
     except (TypeError, ValueError) as exc:
         raise SelectionError("RAG request must be JSON-compatible") from exc
+
+
+def _build_selection_request(request: Mapping[str, Any]) -> dict[str, Any]:
+    """保留选择所需任务参数，并把完整 documents 压缩为语料统计。"""
+    summary = {key: value for key, value in request.items() if key != "documents"}
+    if "documents" not in request:
+        return summary
+
+    documents = request["documents"]
+    if isinstance(documents, (str, bytes, bytearray)) or not isinstance(
+        documents,
+        Sequence,
+    ):
+        raise SelectionError("RAG request documents must be a sequence")
+
+    document_fields: set[str] = set()
+    text_lengths: list[int] = []
+    for document in documents:
+        if not isinstance(document, Mapping):
+            raise SelectionError("Every RAG document must be a mapping")
+        document_fields.update(str(key) for key in document)
+        text_lengths.append(len(str(document.get("text", ""))))
+
+    document_count = len(documents)
+    summary["corpus"] = {
+        "document_count": document_count,
+        "document_fields": sorted(document_fields),
+        "average_text_characters": (
+            round(sum(text_lengths) / document_count, 2) if document_count else 0.0
+        ),
+        "max_text_characters": max(text_lengths, default=0),
+    }
+    return summary
 
 
 def _call_json_model(
@@ -308,7 +349,7 @@ def _call_json_model(
         prompt,
         system=system,
         temperature=0.0,
-        max_tokens=512,
+        max_tokens=SELECTION_MAX_TOKENS,
     )
     text = response.strip()
     if text.startswith("```") and text.endswith("```"):

@@ -78,6 +78,14 @@ component_result = select_component_skills(
 
 `select_component_skills()` 只广告与 Agentic 槽位 capability、输入类型和输出类型一致的 Component `name + description`。模型输出还必须通过槽位集合、数量、唯一性和兼容性校验；之后才读取选中 Component 的正文。
 
+三级选择调用默认为推理模型预留最多 8192 个输出 token。Executor、Generator 与其他 LLM Component 的配置默认值同样不低于 8192；调用方显式传入合法 `max_tokens` 时保留该值，包括小于 8192 的值。
+
+HTTP 模型客户端默认对临时网络错误、408、429 和 5xx（包括 524）额外重试 2 次，并以 2 秒为初值执行指数退避。`executor.options.max_retries` 和 `executor.options.retry_backoff_seconds` 可覆盖这两个值；400 等确定性请求错误不会重试。`timeout_seconds` 只控制本地等待时间，不能延长第三方 API 网关自身的上游等待上限。
+
+Vector Retriever 的索引生命周期与 XRAG 对齐：首次遇到某套共享语料时构建归一化稠密向量矩阵，并在 `runtime.vector_index.cache_dir` 下持久化为 `manifest.json + vectors.npy`；后续问题复用内存索引，后续 Python 进程直接加载磁盘索引，每题只编码 query。缓存键由有序文档 ID 与正文、Embedding provider/model/base URL/options 和 `title+text` 格式版本共同计算；任一输入变化都会进入新目录，不会误用旧向量。`manifest.json` 不保存语料正文，索引临时文件通过原子替换发布，损坏或校验失败时自动重建。
+
+Vector Component 优先调用可选的 `context.search_vector_index()`，在 Claude Code 等只实现基础 `context.embed()` 的环境中仍可退回直接余弦检索。索引的 `builds`、`disk_loads`、`memory_hits`、最近来源与路径写入 `vector_index_cache`；每个 Component 的名称、槽位、状态和 `duration_seconds` 写入 `component_timings`，用于区分索引构建、检索、重排和生成延迟。
+
 端到端入口为：
 
 ```python
@@ -112,13 +120,13 @@ result = run_rag_from_config(
 
 ### Demo 入口
 
-`settings.yaml` 的 `demo` 段统一声明 `corpus_path`、`test_path`、`output.result_path`、`output.log_path`、`max_examples`、`candidate_documents_only` 和请求覆盖参数。用户不需要手工加载 JSONL 或拼接 framework API：
+`settings.yaml` 的 `demo` 段统一声明 `corpus_path`、`test_path`、`output.result_path`、`output.log_path`、`max_examples`、`candidate_documents_only`、`select_skills_per_example`、`batch_selection_query_sample_size` 和请求覆盖参数。用户不需要手工加载 JSONL 或拼接 framework API：
 
 ```powershell
 python -B run_demo.py
 ```
 
-`framework.demo.run_demo()` 只创建一次模型客户端，逐题执行三级选择、编译和 RAG，计算 Hit@1、Hit@10、EM、F1。最终答案、Skill 选择、检索 ID、trace、编译指令与宏平均写入 `output.result_path`，同时默认打印到命令行；Manage、Agentic、Components、执行和测评等中间事件以带 `run_id` 的 JSON Lines 追加到 `output.log_path`。安装项目后等价命令为 `ragskill-demo`；`--limit N` 可临时覆盖运行条数。
+`framework.demo.run_demo()` 只创建一次模型客户端。`select_skills_per_example: true` 时，每题独立执行三级选择和编译，用于 query-level adaptive RAG；设为 `false` 时，framework 根据请求参数、共享语料统计和均匀抽样的问题文本只选择并编译一次，所有问题复用同一命令。问题抽样数由 `batch_selection_query_sample_size` 控制，默认 20；框架同时发送总问题数与实际抽样数，不发送完整问题集。两种模式都会逐题执行检索、生成和 Hit@1、Hit@10、EM、F1 测评。终端在每题后打印单题指标与截至当前题的累计宏平均；最终答案、Skill 选择、检索 ID、trace、编译指令与整体宏平均写入 `output.result_path`。所有阶段事件以带 `run_id` 的 JSON Lines 追加到 `output.log_path`。安装项目后等价命令为 `ragskill-demo`；`--limit N` 可临时覆盖运行条数。
 
 ## 3. 可移植 Skill 包
 
@@ -277,7 +285,7 @@ V0 样例使用 JSON-compatible dictionary：
 - `RAGRequest`：`query`, `documents`, `top_k`, `max_tokens`, 可选 `rewrite_temperature`, 可选 `rewrite_max_tokens`
 - `RAGResult`：`answer`, `documents`, `trace`
 
-`RewriteRequest.query` 必须是非空原始查询。`temperature` 是可选的非负生成温度，默认值为 `0.0`；`max_tokens` 是可选的正整数生成长度上限，默认值为 `256`。`RewriteResult.rewritten_query` 必须是非空字符串，并且只包含一个假设答案式文档。
+`RewriteRequest.query` 必须是非空原始查询。`temperature` 是可选的非负生成温度，默认值为 `0.0`；`max_tokens` 是可选的正整数生成长度上限，默认值为 `8192`。`RewriteResult.rewritten_query` 必须是非空字符串，并且只包含一个假设答案式文档。
 
 V0 的 HyDE 接口固定为 single-sample HyDE（`N=1`）：每个查询只调用一次生成模型，不返回假设文档列表，也不在 Rewriter 中执行多样本向量平均。`rewritten_query` 只作为 Vector Retriever 的检索查询；原始 `query` 保留给 Reranker 和 Generator。
 

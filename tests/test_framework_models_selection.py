@@ -9,6 +9,7 @@ from framework import (
     AgenticStageResult,
     AnthropicModelClient,
     ManageStageResult,
+    ModelAPIError,
     OpenAICompatibleEmbeddingClient,
     OpenAICompatibleModelClient,
     SelectionError,
@@ -36,6 +37,28 @@ class RecordingTransport:
     def __call__(self, url, headers, payload, timeout):
         """记录一次 transport 调用并返回预设响应。"""
         self.calls.append((url, dict(headers), dict(payload), timeout))
+        return self.response
+
+
+class FlakyTransport:
+    """在指定次数内抛出临时错误，随后返回成功响应。"""
+
+    def __init__(self, failures, response, *, retryable=True):
+        """保存失败次数、最终响应和错误是否允许重试。"""
+        self.failures = failures
+        self.response = response
+        self.retryable = retryable
+        self.calls = []
+
+    def __call__(self, url, headers, payload, timeout):
+        """记录请求，并在失败配额耗尽后返回成功响应。"""
+        self.calls.append((url, dict(headers), dict(payload), timeout))
+        if len(self.calls) <= self.failures:
+            raise ModelAPIError(
+                "temporary upstream failure",
+                status_code=524 if self.retryable else 400,
+                retryable=self.retryable,
+            )
         return self.response
 
 
@@ -105,7 +128,94 @@ def test_openai_compatible_client_uses_chat_completions_shape() -> None:
         "temperature": 0.2,
         "max_tokens": 64,
     }
-    assert timeout == 120.0
+    assert timeout == 600.0
+
+
+def test_openai_compatible_client_uses_8192_only_when_limit_is_omitted() -> None:
+    """验证客户端默认使用 8192，同时保留调用方显式指定的较小值。"""
+    transport = RecordingTransport(
+        {"choices": [{"message": {"content": "answer"}}]}
+    )
+    client = OpenAICompatibleModelClient(
+        model="local-executor",
+        api_key="test-secret",
+        base_url="http://localhost:8000/v1",
+        transport=transport,
+    )
+
+    client.generate("default limit")
+    client.generate("explicit limit", max_tokens=64)
+
+    assert transport.calls[0][2]["max_tokens"] == 8192
+    assert transport.calls[1][2]["max_tokens"] == 64
+
+
+def test_openai_client_retries_transient_upstream_errors() -> None:
+    """验证 524 等临时上游错误会按配置重试并最终返回答案。"""
+    transport = FlakyTransport(
+        2,
+        {"choices": [{"message": {"content": "recovered answer"}}]},
+    )
+    client = OpenAICompatibleModelClient(
+        model="test-model",
+        api_key="test-secret",
+        transport=transport,
+        max_retries=2,
+        retry_backoff_seconds=0,
+    )
+
+    assert client.generate("question") == "recovered answer"
+    assert len(transport.calls) == 3
+
+
+def test_openai_client_does_not_retry_deterministic_request_errors() -> None:
+    """验证 400 等确定性请求错误不会因重试而重复提交。"""
+    transport = FlakyTransport(
+        1,
+        {"choices": [{"message": {"content": "unused"}}]},
+        retryable=False,
+    )
+    client = OpenAICompatibleModelClient(
+        model="test-model",
+        api_key="test-secret",
+        transport=transport,
+        max_retries=2,
+        retry_backoff_seconds=0,
+    )
+
+    with pytest.raises(ModelAPIError, match="temporary upstream failure"):
+        client.generate("question")
+
+    assert len(transport.calls) == 1
+
+
+def test_openai_client_reports_reasoning_only_response_without_leaking_it() -> None:
+    """验证兼容接口仅返回 reasoning 时给出可诊断且不泄露内容的错误。"""
+    transport = RecordingTransport(
+        {
+            "choices": [
+                {
+                    "finish_reason": "length",
+                    "message": {
+                        "content": "",
+                        "reasoning_content": "private reasoning details",
+                    },
+                }
+            ]
+        }
+    )
+    client = OpenAICompatibleModelClient(
+        model="reasoning-model",
+        api_key="test-secret",
+        base_url="http://localhost:8000/v1",
+        transport=transport,
+    )
+
+    with pytest.raises(ModelAPIError, match="finish_reason='length'") as error:
+        client.generate("question", max_tokens=512)
+
+    assert "reasoning_content_characters=25" in str(error.value)
+    assert "private reasoning details" not in str(error.value)
 
 
 def test_anthropic_client_uses_messages_shape() -> None:
@@ -222,10 +332,50 @@ def test_manage_stage_exposes_only_manage_skill_body() -> None:
     assert result.manage_skill == "manage-rag-default"
     assert result.guidance == "Prefer a single retrieval route."
     assert len(model.calls) == 1
+    assert model.calls[0][3] == 8192
     prompt = model.calls[0][0]
     assert "# Default RAG Manager" in prompt
     assert "Arrange a sequential RAG workflow" not in prompt
     assert "# Vanilla RAG Workflow" not in prompt
+
+
+def test_manage_stage_summarizes_large_corpus_without_document_text() -> None:
+    """验证选择提示只包含语料统计，不会发送大规模文档正文。"""
+    model = ScriptedModel(
+        [
+            json.dumps(
+                {
+                    "agentic_selection_guidance": "Use lexical retrieval.",
+                    "reason": "The corpus is large.",
+                }
+            )
+        ]
+    )
+    documents = [
+        {
+            "id": f"doc-{index}",
+            "title": f"Title {index}",
+            "text": f"PRIVATE-CORPUS-CONTENT-{index} " + "x" * 1000,
+        }
+        for index in range(2000)
+    ]
+
+    run_manage_stage(
+        {
+            "query": "Which retrieval workflow should be used?",
+            "documents": documents,
+            "top_k": 10,
+        },
+        model=model,
+        skill_root=SAMPLE_ROOT,
+    )
+
+    prompt = model.calls[0][0]
+    assert '"document_count": 2000' in prompt
+    assert '"average_text_characters": 1027.44' in prompt
+    assert '"document_fields": [' in prompt
+    assert "PRIVATE-CORPUS-CONTENT" not in prompt
+    assert len(prompt) < 20_000
 
 
 def test_agentic_stage_advertises_then_loads_only_selected_skill() -> None:
@@ -419,7 +569,7 @@ def test_select_rag_plan_calls_model_with_strict_progressive_disclosure() -> Non
         in component_prompt
     )
     assert "# BM25F Retriever Component" not in component_prompt
-    assert all(call[2:] == (0.0, 512) for call in model.calls)
+    assert all(call[2:] == (0.0, 8192) for call in model.calls)
 
 
 def test_select_rag_plan_rejects_incompatible_component_choice() -> None:

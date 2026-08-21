@@ -55,9 +55,13 @@ def test_example_config_loads_relative_skills_and_clients(monkeypatch) -> None:
     assert config.manage_skill == "manage-rag-default"
     assert config.request_defaults == {
         "top_k": 3,
-        "max_tokens": 512,
+        "max_tokens": 8192,
         "rank_constant": 60,
     }
+    assert config.vector_index is not None
+    assert config.vector_index.cache_dir == (
+        PROJECT_ROOT / "experiments" / "hotpotqa" / "cache" / "vector-indexes"
+    )
     assert config.demo is not None
     assert config.demo.corpus_path == (
         PROJECT_ROOT / "experiments" / "hotpotqa" / "data" / "demo" / "corpus.jsonl"
@@ -71,9 +75,12 @@ def test_example_config_loads_relative_skills_and_clients(monkeypatch) -> None:
     assert config.demo.log_path == (
         PROJECT_ROOT / "experiments" / "hotpotqa" / "outputs" / "demo.log.jsonl"
     )
-    assert config.demo.max_examples == 1
-    assert config.demo.candidate_documents_only is True
+    assert config.demo.max_examples == 100
+    assert config.demo.candidate_documents_only is False
+    assert config.demo.select_skills_per_example is True
+    assert config.demo.batch_selection_query_sample_size == 20
     assert config.demo.request["top_k"] == 10
+    assert "constraints" not in config.demo.request
     assert config.executor.model == "deepseek-v4-flash"
     assert config.executor.base_url == "https://api.vveai.com/v1"
     assert config.embedding is not None
@@ -82,6 +89,8 @@ def test_example_config_loads_relative_skills_and_clients(monkeypatch) -> None:
     assert isinstance(model, OpenAICompatibleModelClient)
     assert isinstance(embedding, SentenceTransformerEmbeddingClient)
     assert model.api_key == "test-secret"
+    assert model.max_retries == 2
+    assert model.retry_backoff_seconds == 2.0
 
 
 def test_api_service_config_reads_named_environment_variable(monkeypatch) -> None:
@@ -177,4 +186,4 @@ def test_run_rag_from_config_executes_complete_pipeline(monkeypatch) -> None:
     assert result["answer"] == "Apples grow in orchards."
     assert result["documents"][0]["id"] == "apple"
     assert len(model.calls) == 4
-    assert model.calls[-1][3] == 512
+    assert model.calls[-1][3] == 8192

@@ -68,13 +68,13 @@ def _specs_by_name():
 
 
 def test_sample_repository_has_three_strict_skill_levels() -> None:
-    """验证样例仓库严格包含三层共八个 Skill。"""
+    """验证样例仓库严格包含三层共十个 Skill。"""
     specs = tuple(discover_specs(SAMPLE_ROOT))
 
-    assert len(specs) == 8
+    assert len(specs) == 10
     assert sum(spec.kind is SkillKind.MANAGE for spec in specs) == 1
     assert sum(spec.kind is SkillKind.AGENTIC for spec in specs) == 2
-    assert sum(spec.kind is SkillKind.COMPONENT for spec in specs) == 5
+    assert sum(spec.kind is SkillKind.COMPONENT for spec in specs) == 7
 
 
 def test_skill_packages_are_grouped_by_declared_kind() -> None:
@@ -369,7 +369,7 @@ def test_hyde_uses_defaults_and_calls_model_once(optional_inputs) -> None:
     prompt, temperature, max_tokens = context.prompts[0]
     assert "Question: Where do apples grow?" in prompt
     assert temperature == 0.0
-    assert max_tokens == 256
+    assert max_tokens == 8192
 
 
 def test_hyde_accepts_minimum_positive_max_tokens() -> None:
