@@ -268,7 +268,7 @@ requires:
       - component-vector-retriever
 ```
 
-Skill 发现阶段校验被引用的 Component 存在并且确实提供对应 capability；Component 选择阶段和编译阶段都会再次校验实际绑定。single-sample HyDE 使用该声明强制要求 Vector Retriever，因此 `HyDE + BM25` 会被拒绝，即使模型或调用方显式返回了该组合。
+Skill 发现阶段校验被引用的 Component 存在并且确实提供对应 capability；Component 选择阶段和编译阶段都会再次校验实际绑定。运行时依赖采用存在性语义：同一 capability 的实际绑定中至少有一个 Component 出现在允许列表中即可满足要求，额外绑定的兼容 Component 不会使依赖失效。single-sample HyDE 使用该声明强制要求至少存在一个 Vector Retriever，因此 `HyDE + BM25` 会被拒绝，而 `HyDE + BM25 + Vector` 可以用于 Conditional workflow；该 workflow 仍必须保证 HyDE 文本只进入 Vector Retriever。
 
 ## 7. 标准数据包络
 

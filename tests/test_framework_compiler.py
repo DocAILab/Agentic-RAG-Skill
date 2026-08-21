@@ -209,6 +209,75 @@ def test_compiler_rejects_hyde_with_bm25_retriever() -> None:
         )
 
 
+def test_run_compiled_conditional_rag_executes_hybrid_route() -> None:
+    """验证 Conditional workflow 可安全绑定 HyDE、BM25 和 Vector。"""
+    hypothetical_document = (
+        "Apple trees grow in imaginary lunar orchards."
+    )
+    model = ScriptedExecutorModel(
+        [
+            json.dumps(
+                {
+                    "route": "hybrid",
+                    "reason": "Exact and semantic evidence are useful.",
+                    "confidence": 0.9,
+                }
+            ),
+            hypothetical_document,
+            "Apples grow in orchards.",
+        ]
+    )
+    context = RuntimeComponentContext(
+        executor_model=model,
+        embedding_model=KeywordEmbeddingModel(),
+    )
+
+    result = run_compiled_rag(
+        workflow="agentic-conditional-rag",
+        bindings={
+            "classifier": ["component-classifier"],
+            "rewriter": ["component-hyde-rewriter"],
+            "lexical_retriever": ["component-bm25-retriever"],
+            "semantic_retriever": ["component-vector-retriever"],
+            "reranker": [],
+            "generator": ["component-grounded-generator"],
+        },
+        request={
+            "query": "Where do apple trees grow?",
+            "documents": DOCUMENTS,
+            "top_k": 1,
+            "max_tokens": 64,
+        },
+        skill_root=SAMPLE_ROOT,
+        context=context,
+    )
+
+    assert result["answer"] == "Apples grow in orchards."
+    assert result["route"] == "hybrid"
+    assert result["documents"][0]["id"] == "apple"
+    assert [event["step"] for event in result["trace"]] == [
+        "classify",
+        "rewrite",
+        "retrieve_and_fuse",
+        "generate",
+    ]
+    assert [
+        timing["component"]
+        for timing in result["component_timings"]
+    ] == [
+        "component-classifier",
+        "component-hyde-rewriter",
+        "component-bm25-retriever",
+        "component-vector-retriever",
+        "component-grounded-generator",
+    ]
+    assert "Where do apple trees grow?" in model.calls[0][0]
+    assert "Where do apple trees grow?" in model.calls[1][0]
+    assert "Where do apple trees grow?" in model.calls[2][0]
+    assert "Apple trees grow fruit in orchards." in model.calls[2][0]
+    assert "imaginary lunar orchards" not in model.calls[2][0]
+
+
 def test_run_compiled_rag_executes_rrfusion_with_two_retrievers() -> None:
     """验证显式单指令能够绑定 BM25、Vector 和 RRFusion workflow。"""
     model = ScriptedExecutorModel(["Fused answer."])
@@ -418,6 +487,99 @@ def test_run_rag_is_one_call_from_selection_to_generated_answer() -> None:
     ]
     assert result["compiled_instruction"].startswith("run_compiled_rag(")
     assert len(model.calls) == 4
+
+
+def test_run_rag_executes_conditional_hybrid_pipeline() -> None:
+    """验证一次调用可选择并执行完整 Conditional Hybrid pipeline。"""
+    hypothetical_document = (
+        "Apple trees grow in imaginary lunar orchards."
+    )
+    model = ScriptedExecutorModel(
+        [
+            json.dumps(
+                {
+                    "agentic_selection_guidance": (
+                        "Choose retrieval according to each request."
+                    ),
+                    "reason": "The retrieval strategy is request dependent.",
+                }
+            ),
+            json.dumps(
+                {
+                    "selected_agentic_skill": "agentic-conditional-rag",
+                    "reason": "Runtime routing is appropriate.",
+                }
+            ),
+            json.dumps(
+                {
+                    "component_bindings": {
+                        "classifier": ["component-classifier"],
+                        "rewriter": ["component-hyde-rewriter"],
+                        "lexical_retriever": [
+                            "component-bm25-retriever"
+                        ],
+                        "semantic_retriever": [
+                            "component-vector-retriever"
+                        ],
+                        "reranker": [],
+                        "generator": [
+                            "component-grounded-generator"
+                        ],
+                    },
+                    "reason": "Bind safe route-specific components.",
+                }
+            ),
+            json.dumps(
+                {
+                    "route": "hybrid",
+                    "reason": "Exact and semantic evidence are useful.",
+                    "confidence": 0.9,
+                }
+            ),
+            hypothetical_document,
+            "Apples grow in orchards.",
+        ]
+    )
+
+    result = run_rag(
+        {
+            "query": "Where do apple trees grow?",
+            "documents": DOCUMENTS,
+            "top_k": 1,
+            "max_tokens": 64,
+        },
+        model=model,
+        embedding_model=KeywordEmbeddingModel(),
+        skill_root=SAMPLE_ROOT,
+    )
+
+    assert result["answer"] == "Apples grow in orchards."
+    assert result["documents"][0]["id"] == "apple"
+    assert result["route"] == "hybrid"
+    assert result["selection"]["agentic_skill"] == (
+        "agentic-conditional-rag"
+    )
+    assert result["selection"]["component_bindings"] == {
+        "classifier": ["component-classifier"],
+        "rewriter": ["component-hyde-rewriter"],
+        "lexical_retriever": ["component-bm25-retriever"],
+        "semantic_retriever": ["component-vector-retriever"],
+        "reranker": [],
+        "generator": ["component-grounded-generator"],
+    }
+    assert [event["step"] for event in result["trace"]] == [
+        "classify",
+        "rewrite",
+        "retrieve_and_fuse",
+        "generate",
+    ]
+    assert "component-classifier" in result["compiled_instruction"]
+    assert "component-bm25-retriever" in result["compiled_instruction"]
+    assert "component-vector-retriever" in result["compiled_instruction"]
+    assert "Where do apple trees grow?" in model.calls[-1][0]
+    assert "Apple trees grow fruit" in model.calls[-1][0]
+    assert "imaginary lunar orchards" not in model.calls[-1][0]
+    assert len(model.calls) == 6
 
 
 def test_run_rag_executes_modified_retrievers_in_original_rrfusion_chain() -> None:

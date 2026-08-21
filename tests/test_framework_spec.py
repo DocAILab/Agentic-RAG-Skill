@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from framework import SkillKind, SkillSpecError, discover_specs, load_runtime_callable
+from framework.spec import binding_requirement_errors
 
 SAMPLE_ROOT = Path(__file__).parents[1] / "framework" / "skills"
 
@@ -68,12 +69,12 @@ def _specs_by_name():
 
 
 def test_sample_repository_has_three_strict_skill_levels() -> None:
-    """验证样例仓库严格包含三层共十个 Skill。"""
+    """验证样例仓库严格包含三层共十一个 Skill。"""
     specs = tuple(discover_specs(SAMPLE_ROOT))
 
-    assert len(specs) == 10
+    assert len(specs) == 11
     assert sum(spec.kind is SkillKind.MANAGE for spec in specs) == 1
-    assert sum(spec.kind is SkillKind.AGENTIC for spec in specs) == 2
+    assert sum(spec.kind is SkillKind.AGENTIC for spec in specs) == 3
     assert sum(spec.kind is SkillKind.COMPONENT for spec in specs) == 7
 
 
@@ -138,6 +139,31 @@ def test_hyde_declares_vector_retriever_requirement() -> None:
     assert len(hyde.requires) == 1
     assert hyde.requires[0].capability == "retriever"
     assert hyde.requires[0].components == ("component-vector-retriever",)
+
+
+def test_hyde_requirement_accepts_vector_with_another_retriever() -> None:
+    """验证存在 Vector 时额外绑定 BM25 不会破坏 HyDE 依赖。"""
+    specs = _specs_by_name()
+    conditional = specs["agentic-conditional-rag"]
+    components = {
+        spec.package_name: spec
+        for spec in specs.values()
+        if spec.kind is SkillKind.COMPONENT
+    }
+    bindings = {
+        "classifier": ("component-classifier",),
+        "rewriter": ("component-hyde-rewriter",),
+        "lexical_retriever": ("component-bm25-retriever",),
+        "semantic_retriever": ("component-vector-retriever",),
+        "reranker": (),
+        "generator": ("component-grounded-generator",),
+    }
+
+    assert binding_requirement_errors(
+        conditional,
+        bindings,
+        components,
+    ) == ()
 
 
 def test_agentic_scripts_only_arrange_abstract_component_calls() -> None:
@@ -247,6 +273,387 @@ def test_vanilla_workflow_rejects_invalid_rewriter_result(
         match="Rewriter must return a non-empty rewritten_query",
     ):
         workflow({"query": "Where?"}, components)
+
+
+def test_conditional_workflow_uses_only_lexical_route() -> None:
+    """验证 lexical 路线只使用原问题调用词法检索器。"""
+    workflow = load_runtime_callable(
+        _specs_by_name()["agentic-conditional-rag"]
+    )
+    original_query = "What is product code XR-100?"
+    components = FakeComponents(
+        {
+            "classifier": [
+                lambda inputs: {
+                    "route": "lexical",
+                    "reason": "The query contains an exact identifier.",
+                    "confidence": 0.95,
+                }
+            ],
+            "rewriter": [
+                lambda inputs: pytest.fail(
+                    "Lexical route must not call the Rewriter"
+                )
+            ],
+            "lexical_retriever": [
+                lambda inputs: {"documents": [DOCUMENTS[0]]}
+            ],
+            "semantic_retriever": [
+                lambda inputs: pytest.fail(
+                    "Lexical route must not call the semantic Retriever"
+                )
+            ],
+            "generator": [
+                lambda inputs: {"answer": "XR-100 is documented."}
+            ],
+        }
+    )
+
+    result = workflow(
+        {
+            "query": original_query,
+            "documents": DOCUMENTS,
+            "top_k": 1,
+        },
+        components,
+    )
+
+    calls = {
+        slot: inputs
+        for slot, _, inputs in components.calls
+    }
+
+    assert result["answer"] == "XR-100 is documented."
+    assert result["route"] == "lexical"
+    assert [call[0] for call in components.calls] == [
+        "classifier",
+        "lexical_retriever",
+        "generator",
+    ]
+    assert calls["classifier"]["query"] == original_query
+    assert calls["lexical_retriever"]["query"] == original_query
+    assert calls["generator"]["query"] == original_query
+    assert result["documents"] == [DOCUMENTS[0]]
+
+
+def test_conditional_workflow_uses_hyde_only_for_semantic_retrieval() -> None:
+    """验证 semantic 路线只把 HyDE 文本用于语义检索。"""
+    workflow = load_runtime_callable(
+        _specs_by_name()["agentic-conditional-rag"]
+    )
+    original_query = "Where do apples usually grow?"
+    hypothetical_document = (
+        "Apple trees commonly grow in temperate orchards."
+    )
+    components = FakeComponents(
+        {
+            "classifier": [
+                lambda inputs: {
+                    "route": "semantic",
+                    "reason": "The query is a semantic paraphrase.",
+                    "confidence": 0.9,
+                }
+            ],
+            "rewriter": [
+                lambda inputs: {
+                    "rewritten_query": hypothetical_document
+                }
+            ],
+            "lexical_retriever": [
+                lambda inputs: pytest.fail(
+                    "Semantic route must not call the lexical Retriever"
+                )
+            ],
+            "semantic_retriever": [
+                lambda inputs: {"documents": [DOCUMENTS[0]]}
+            ],
+            "reranker": [
+                lambda inputs: {
+                    "documents": list(inputs["documents"])
+                }
+            ],
+            "generator": [
+                lambda inputs: {"answer": "They grow in orchards."}
+            ],
+        }
+    )
+
+    result = workflow(
+        {
+            "query": original_query,
+            "documents": DOCUMENTS,
+            "top_k": 1,
+            "rewrite_temperature": 0.2,
+            "rewrite_max_tokens": 96,
+        },
+        components,
+    )
+
+    calls = {
+        slot: inputs
+        for slot, _, inputs in components.calls
+    }
+
+    assert result["answer"] == "They grow in orchards."
+    assert result["route"] == "semantic"
+    assert [call[0] for call in components.calls] == [
+        "classifier",
+        "rewriter",
+        "semantic_retriever",
+        "reranker",
+        "generator",
+    ]
+    assert calls["classifier"]["query"] == original_query
+    assert calls["rewriter"]["query"] == original_query
+    assert calls["rewriter"]["temperature"] == 0.2
+    assert calls["rewriter"]["max_tokens"] == 96
+    assert calls["semantic_retriever"]["query"] == hypothetical_document
+    assert calls["reranker"]["query"] == original_query
+    assert calls["generator"]["query"] == original_query
+    assert calls["generator"]["documents"] == [DOCUMENTS[0]]
+    assert result["documents"] == [DOCUMENTS[0]]
+
+
+def test_conditional_workflow_fuses_hybrid_retrieval_routes() -> None:
+    """验证 hybrid 路线使用不同查询检索并通过 RRF 融合。"""
+    workflow = load_runtime_callable(
+        _specs_by_name()["agentic-conditional-rag"]
+    )
+    original_query = "Which fruit grows in an orchard?"
+    hypothetical_document = (
+        "Orchard fruit grows on cultivated trees."
+    )
+    components = FakeComponents(
+        {
+            "classifier": [
+                lambda inputs: {
+                    "route": "hybrid",
+                    "reason": "Exact and semantic evidence are useful.",
+                    "confidence": 0.85,
+                }
+            ],
+            "rewriter": [
+                lambda inputs: {
+                    "rewritten_query": hypothetical_document
+                }
+            ],
+            "lexical_retriever": [
+                lambda inputs: {
+                    "documents": [DOCUMENTS[0], DOCUMENTS[1]]
+                }
+            ],
+            "semantic_retriever": [
+                lambda inputs: {
+                    "documents": [DOCUMENTS[1], DOCUMENTS[2]]
+                }
+            ],
+            "generator": [
+                lambda inputs: {"answer": "Apple is an orchard fruit."}
+            ],
+        }
+    )
+
+    result = workflow(
+        {
+            "query": original_query,
+            "documents": DOCUMENTS,
+            "top_k": 2,
+            "rank_constant": 60,
+        },
+        components,
+    )
+
+    calls = {
+        slot: inputs
+        for slot, _, inputs in components.calls
+    }
+
+    assert result["answer"] == "Apple is an orchard fruit."
+    assert result["route"] == "hybrid"
+    assert [call[0] for call in components.calls] == [
+        "classifier",
+        "rewriter",
+        "lexical_retriever",
+        "semantic_retriever",
+        "generator",
+    ]
+    assert calls["lexical_retriever"]["query"] == original_query
+    assert calls["semantic_retriever"]["query"] == hypothetical_document
+    assert calls["lexical_retriever"]["top_k"] == 4
+    assert calls["semantic_retriever"]["top_k"] == 4
+    assert calls["generator"]["query"] == original_query
+    assert [
+        document["id"]
+        for document in calls["generator"]["documents"]
+    ] == ["banana", "apple"]
+    assert [document["id"] for document in result["documents"]] == [
+        "banana",
+        "apple",
+    ]
+
+
+def test_conditional_semantic_route_works_without_rewriter() -> None:
+    """验证未绑定 Rewriter 时 semantic 路线使用原问题。"""
+    workflow = load_runtime_callable(
+        _specs_by_name()["agentic-conditional-rag"]
+    )
+    original_query = "Where do apples grow?"
+    components = FakeComponents(
+        {
+            "classifier": [
+                lambda inputs: {
+                    "route": "semantic",
+                    "reason": "Semantic retrieval is appropriate.",
+                    "confidence": 0.8,
+                }
+            ],
+            "semantic_retriever": [
+                lambda inputs: {"documents": [DOCUMENTS[0]]}
+            ],
+            "generator": [lambda inputs: {"answer": "In orchards."}],
+        }
+    )
+
+    result = workflow(
+        {"query": original_query, "documents": DOCUMENTS},
+        components,
+    )
+
+    calls = {
+        slot: inputs
+        for slot, _, inputs in components.calls
+    }
+    assert [call[0] for call in components.calls] == [
+        "classifier",
+        "semantic_retriever",
+        "generator",
+    ]
+    assert calls["semantic_retriever"]["query"] == original_query
+    assert result["route"] == "semantic"
+
+
+@pytest.mark.parametrize("query", ["", "   ", "\n\t"])
+def test_conditional_workflow_rejects_empty_query(query) -> None:
+    """验证 Conditional workflow 拒绝空问题。"""
+    workflow = load_runtime_callable(
+        _specs_by_name()["agentic-conditional-rag"]
+    )
+
+    with pytest.raises(ValueError, match="non-empty query"):
+        workflow({"query": query}, FakeComponents({}))
+
+
+@pytest.mark.parametrize("top_k", [0, -1])
+def test_conditional_workflow_rejects_non_positive_top_k(top_k) -> None:
+    """验证 Conditional workflow 要求 top_k 为正数。"""
+    workflow = load_runtime_callable(
+        _specs_by_name()["agentic-conditional-rag"]
+    )
+
+    with pytest.raises(ValueError, match="top_k must be positive"):
+        workflow(
+            {"query": "Where?", "top_k": top_k},
+            FakeComponents({}),
+        )
+
+
+@pytest.mark.parametrize("route", [None, "", "unsupported"])
+def test_conditional_workflow_rejects_invalid_classifier_route(route) -> None:
+    """验证 Conditional workflow 拒绝分类器返回未知路线。"""
+    workflow = load_runtime_callable(
+        _specs_by_name()["agentic-conditional-rag"]
+    )
+    components = FakeComponents(
+        {
+            "classifier": [
+                lambda inputs: {
+                    "route": route,
+                    "reason": "invalid test route",
+                    "confidence": 0.5,
+                }
+            ]
+        }
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Classifier route must be lexical, semantic, or hybrid",
+    ):
+        workflow({"query": "Where?"}, components)
+
+
+@pytest.mark.parametrize(
+    "rewriter_result",
+    [
+        {},
+        {"rewritten_query": None},
+        {"rewritten_query": "   "},
+    ],
+)
+def test_conditional_workflow_rejects_invalid_rewriter_result(
+    rewriter_result,
+) -> None:
+    """验证 semantic 路线拒绝缺失或为空的改写结果。"""
+    workflow = load_runtime_callable(
+        _specs_by_name()["agentic-conditional-rag"]
+    )
+    components = FakeComponents(
+        {
+            "classifier": [
+                lambda inputs: {
+                    "route": "semantic",
+                    "reason": "Semantic retrieval is appropriate.",
+                    "confidence": 0.8,
+                }
+            ],
+            "rewriter": [lambda inputs: rewriter_result],
+        }
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="Rewriter must return a non-empty rewritten_query",
+    ):
+        workflow({"query": "Where?"}, components)
+
+
+@pytest.mark.parametrize("rank_constant", [0, -1])
+def test_conditional_hybrid_route_rejects_invalid_rank_constant(
+    rank_constant,
+) -> None:
+    """验证 hybrid 路线要求 RRF 融合常数为正数。"""
+    workflow = load_runtime_callable(
+        _specs_by_name()["agentic-conditional-rag"]
+    )
+    components = FakeComponents(
+        {
+            "classifier": [
+                lambda inputs: {
+                    "route": "hybrid",
+                    "reason": "Both retrieval routes are useful.",
+                    "confidence": 0.8,
+                }
+            ],
+            "lexical_retriever": [
+                lambda inputs: {"documents": []}
+            ],
+            "semantic_retriever": [
+                lambda inputs: {"documents": []}
+            ],
+        }
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="rank_constant must be positive",
+    ):
+        workflow(
+            {
+                "query": "Where?",
+                "rank_constant": rank_constant,
+            },
+            components,
+        )
 
 
 def test_rrfusion_workflow_calls_two_retrievers_and_fuses_results() -> None:
