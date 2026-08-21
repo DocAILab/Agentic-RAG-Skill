@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -31,7 +33,7 @@ class APIServiceConfig:
     base_url: str | None
     api_key_env: str | None = None
     api_key: str | None = field(default=None, repr=False)
-    timeout_seconds: float = 120.0
+    timeout_seconds: float = 600.0
     extra_headers: Mapping[str, str] = field(default_factory=dict)
     options: Mapping[str, Any] = field(default_factory=dict)
 
@@ -61,7 +63,16 @@ class DemoConfig:
     log_path: Path
     max_examples: int | None = 1
     candidate_documents_only: bool = True
+    select_skills_per_example: bool = True
+    batch_selection_query_sample_size: int = 20
     request: Mapping[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True, slots=True)
+class VectorIndexConfig:
+    """描述持久化语料向量索引的缓存目录。"""
+
+    cache_dir: Path
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +84,7 @@ class FrameworkConfig:
     manage_skill: str
     executor: APIServiceConfig
     embedding: APIServiceConfig | None = None
+    vector_index: VectorIndexConfig | None = None
     request_defaults: Mapping[str, Any] = field(default_factory=dict)
     demo: DemoConfig | None = None
 
@@ -103,6 +115,10 @@ def load_framework_config(path: str | Path) -> FrameworkConfig:
     request_defaults = runtime_payload.get("request_defaults", {})
     if not isinstance(request_defaults, Mapping):
         raise ConfigError("runtime.request_defaults must be a mapping")
+    vector_index = _parse_vector_index(
+        runtime_payload.get("vector_index"),
+        config_path,
+    )
     embedding_payload = payload.get("embedding")
     embedding = None
     if embedding_payload is not None:
@@ -123,6 +139,7 @@ def load_framework_config(path: str | Path) -> FrameworkConfig:
         manage_skill=manage_skill,
         executor=executor,
         embedding=embedding,
+        vector_index=vector_index,
         request_defaults=dict(request_defaults),
         demo=demo,
     )
@@ -158,7 +175,33 @@ def run_rag_from_config(
         embedding_model=embedding_model,
         skill_root=config.skill_root,
         manage_skill=config.manage_skill,
+        vector_index_cache_dir=(
+            config.vector_index.cache_dir if config.vector_index is not None else None
+        ),
+        embedding_fingerprint=(
+            embedding_service_fingerprint(config.embedding)
+            if config.embedding is not None
+            else None
+        ),
     )
+
+
+def embedding_service_fingerprint(service: APIServiceConfig) -> str:
+    """从不含密钥的 Embedding 服务配置生成稳定缓存指纹。"""
+    identity = {
+        "provider": service.provider.strip().lower().replace("_", "-"),
+        "model": service.model,
+        "base_url": service.base_url,
+        "options": dict(service.options),
+    }
+    encoded = json.dumps(
+        identity,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _read_yaml(path: Path) -> Mapping[str, Any]:
@@ -197,7 +240,7 @@ def _parse_service(payload: Mapping[str, Any], field_name: str) -> APIServiceCon
             f"{field_name}.api_key and {field_name}.api_key_env cannot be used together"
         )
     try:
-        timeout_seconds = float(payload.get("timeout_seconds", 120.0))
+        timeout_seconds = float(payload.get("timeout_seconds", 600.0))
     except (TypeError, ValueError) as exc:
         raise ConfigError(f"{field_name}.timeout_seconds must be numeric") from exc
     if timeout_seconds <= 0:
@@ -231,6 +274,37 @@ def _parse_service(payload: Mapping[str, Any], field_name: str) -> APIServiceCon
         extra_headers=extra_headers,
         options=dict(options),
     )
+
+
+def _parse_vector_index(
+    payload: Any,
+    config_path: Path,
+) -> VectorIndexConfig | None:
+    """解析可选持久化向量索引目录，并允许显式禁用。"""
+    if payload is None:
+        return None
+    if not isinstance(payload, Mapping):
+        raise ConfigError("runtime.vector_index must be a mapping")
+    enabled = payload.get("enabled", True)
+    if not isinstance(enabled, bool):
+        raise ConfigError("runtime.vector_index.enabled must be boolean")
+    allowed = {"enabled", "cache_dir"}
+    unknown = set(payload) - allowed
+    if unknown:
+        raise ConfigError(
+            f"runtime.vector_index contains unknown keys: {sorted(unknown)}"
+        )
+    if not enabled:
+        return None
+    cache_dir = _resolve_config_path(
+        _required_text(payload, "cache_dir"),
+        config_path,
+    )
+    if cache_dir.exists() and not cache_dir.is_dir():
+        raise ConfigError(
+            f"runtime.vector_index.cache_dir is not a directory: {cache_dir}"
+        )
+    return VectorIndexConfig(cache_dir=cache_dir)
 
 
 def _parse_demo(payload: Mapping[str, Any], config_path: Path) -> DemoConfig:
@@ -274,6 +348,21 @@ def _parse_demo(payload: Mapping[str, Any], config_path: Path) -> DemoConfig:
     candidate_documents_only = payload.get("candidate_documents_only", True)
     if not isinstance(candidate_documents_only, bool):
         raise ConfigError("demo.candidate_documents_only must be boolean")
+    select_skills_per_example = payload.get("select_skills_per_example", True)
+    if not isinstance(select_skills_per_example, bool):
+        raise ConfigError("demo.select_skills_per_example must be boolean")
+    batch_selection_query_sample_size = payload.get(
+        "batch_selection_query_sample_size",
+        20,
+    )
+    if (
+        isinstance(batch_selection_query_sample_size, bool)
+        or not isinstance(batch_selection_query_sample_size, int)
+        or batch_selection_query_sample_size <= 0
+    ):
+        raise ConfigError(
+            "demo.batch_selection_query_sample_size must be a positive integer"
+        )
     request = payload.get("request", {})
     if not isinstance(request, Mapping):
         raise ConfigError("demo.request must be a mapping")
@@ -289,6 +378,8 @@ def _parse_demo(payload: Mapping[str, Any], config_path: Path) -> DemoConfig:
         log_path=log_path,
         max_examples=max_examples,
         candidate_documents_only=candidate_documents_only,
+        select_skills_per_example=select_skills_per_example,
+        batch_selection_query_sample_size=batch_selection_query_sample_size,
         request=dict(request),
     )
 

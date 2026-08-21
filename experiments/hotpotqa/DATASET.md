@@ -36,15 +36,16 @@ and evaluation results must be written outside `data/raw/`.
 `data/demo/` contains a small, tracked subset derived from the distractor
 validation split for framework demonstrations:
 
-- `corpus.jsonl`: 200 shared candidate documents with stable title IDs.
-- `test.jsonl`: 20 questions with answers, relevant document IDs, original
+- `corpus.jsonl`: 2,000 shared candidate documents with stable title IDs.
+- `test.jsonl`: 100 questions with answers, relevant document IDs, original
   ten-document candidate sets, and sentence-level supporting facts.
 - `manifest.json`: deterministic sampling configuration, counts, source hash,
   and output hashes.
 - `README.md`: data contract and framework usage example.
 
-The test set uses seed `20260807` and balances 10 bridge with 10 comparison
-questions. Rebuild it without modifying raw data:
+The test set uses seed `20260807` and balances 50 bridge with 50 comparison
+questions. Additional validation contexts deterministically expand the shared
+corpus to 2,000 unique documents. Rebuild it without modifying raw data:
 
 ```powershell
 python -B experiments/hotpotqa/scripts/build_demo.py

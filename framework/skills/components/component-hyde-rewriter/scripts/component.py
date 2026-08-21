@@ -8,13 +8,13 @@ def run(inputs, context):
         raise ValueError("HyDE requires a non-empty query")
 
     temperature_value = inputs.get("temperature", 0.0)
-    max_tokens_value = inputs.get("max_tokens", 256)
+    max_tokens_value = inputs.get("max_tokens", 8192)
 
     temperature = (
         0.0 if temperature_value is None else float(temperature_value)
     )
     max_tokens = (
-        256 if max_tokens_value is None else int(max_tokens_value)
+        8192 if max_tokens_value is None else int(max_tokens_value)
     )
 
     if temperature < 0:

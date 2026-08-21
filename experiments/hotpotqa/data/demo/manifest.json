@@ -16,40 +16,40 @@
       {
         "type": "bridge",
         "answer_type": "span",
-        "count": 10
+        "count": 50
       },
       {
         "type": "comparison",
         "answer_type": "span",
-        "count": 6
+        "count": 30
       },
       {
         "type": "comparison",
         "answer_type": "yes",
-        "count": 2
+        "count": 10
       },
       {
         "type": "comparison",
         "answer_type": "no",
-        "count": 2
+        "count": 10
       }
     ]
   },
   "counts": {
-    "documents": 200,
-    "test_examples": 20,
-    "supporting_facts": 44
+    "documents": 2000,
+    "test_examples": 100,
+    "supporting_facts": 242
   },
   "files": {
     "corpus.jsonl": {
-      "records": 200,
-      "bytes": 255212,
-      "sha256": "fdd3009b83f90b6f4ec35e14f665241eeb212a7d70aee3cef05ed9b991dde00e"
+      "records": 2000,
+      "bytes": 2531227,
+      "sha256": "3c75ae063121f487c0ceb3a6851de5abe83c9c39a1e75edb70d1bac9304bbdbb"
     },
     "test.jsonl": {
-      "records": 20,
-      "bytes": 14509,
-      "sha256": "0964206e4cfaee3b05e69ea1ee84757068467949216f3d163df93b4641337f4f"
+      "records": 100,
+      "bytes": 75213,
+      "sha256": "bd5bee01ff2bc88b03f514e8796214a4c53b9402fd0babf0b930bc3d2c1cc299"
     }
   }
 }
