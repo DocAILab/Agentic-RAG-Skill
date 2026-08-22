@@ -43,7 +43,7 @@ Copy-Item framework/settings.example.yaml framework/settings.yaml
 python -B run_demo.py
 ```
 
-入口从 `framework/settings.yaml` 读取 HotpotQA demo 路径、运行条数、请求参数、最终结果路径与中间日志路径，自动完成三级选择、检索、生成和 Hit@1、Hit@10、EM、F1 测评。
+入口从 `framework/settings.yaml` 读取 HotpotQA demo 路径、运行条数、请求参数、最终结果路径与中间日志路径，自动完成三级选择、检索、生成及检索/生成测评。检索侧输出 F1@1、Top-n F1（n 为该题 golden 文档数）、MRR、Hit@1、Hit@10、MAP、NDCG、DCG、IDCG；生成侧输出 ChrF、ChrF++、METEOR、R1、R2、RL、PPL、CER、WER，不使用生成 EM/F1。
 
 - 每题预测、单题指标和截至当前题的累计宏平均默认打印到命令行；完整结果写入 `demo.output.result_path`。
 - Manage、Agentic、Components、编译、执行和测评事件写入 `demo.output.log_path`。
@@ -71,7 +71,7 @@ python -B -m ruff check --no-cache framework tests experiments/hotpotqa/scripts 
 |   |   |-- manage/             # 高层任务分析与 Agentic Skill 选择
 |   |   |-- agentic/            # RAG workflow 与抽象组件槽位
 |   |   `-- components/         # Retriever、Generator 等原子实现
-|   |-- evaluation/             # Hit@K、EM、F1
+|   |-- evaluation/             # XRAG 对齐的检索与生成指标
 |   |-- settings.example.yaml   # 可提交配置模板
 |   |-- selection.py            # 三级 LLM 选择
 |   |-- compiler.py             # workflow 与组件绑定
