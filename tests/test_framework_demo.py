@@ -32,6 +32,24 @@ class DemoScriptedModel:
         return self.responses.pop(0)
 
 
+class DemoGenerationEvaluator:
+    """为 demo 测试返回固定生成指标，避免加载 GPT-2。"""
+
+    def evaluate(self, prediction, references):
+        """返回可用于验证报告结构的全一生成指标。"""
+        return {
+            "chrf": 1.0,
+            "chrf++": 1.0,
+            "meteor": 1.0,
+            "r1": 1.0,
+            "r2": 1.0,
+            "rl": 1.0,
+            "ppl": 1.0,
+            "cer": 1.0,
+            "wer": 1.0,
+        }
+
+
 def test_run_demo_uses_configured_data_and_writes_report(tmp_path, capsys) -> None:
     """验证统一入口从配置加载数据、执行一题并保存测评报告。"""
     config = load_framework_config(CONFIG_PATH)
@@ -75,15 +93,39 @@ def test_run_demo_uses_configured_data_and_writes_report(tmp_path, capsys) -> No
     )
     config = replace(config, demo=demo)
 
-    report = run_demo(config, model=model, verbose=True)
+    report = run_demo(
+        config,
+        model=model,
+        generation_evaluator=DemoGenerationEvaluator(),
+        verbose=True,
+    )
 
     assert report["summary"] == {
         "count": 1,
-        "hit@1": 1.0,
-        "hit@10": 1.0,
-        "em": 1.0,
-        "f1": 1.0,
+        "retrieval": {
+            "F1@1": 2 / 3,
+            "F1": 0.5,
+            "MRR": 1.0,
+            "Hit@1": 1.0,
+            "Hit@10": 1.0,
+            "MAP": 0.8333333333333333,
+            "NDCG": 0.9197207891481876,
+            "DCG": 1.5,
+            "IDCG": 1.6309297535714575,
+        },
+        "generation": {
+            "ChrF": 1.0,
+            "ChrF++": 1.0,
+            "METEOR": 1.0,
+            "R1": 1.0,
+            "R2": 1.0,
+            "RL": 1.0,
+            "PPL": 1.0,
+            "CER": 1.0,
+            "WER": 1.0,
+        },
     }
+    assert report["schema_version"] == 2
     assert report["examples"][0]["id"] == first_example["id"]
     assert report["examples"][0]["selection"]["agentic_skill"] == (
         "agentic-vanilla-rag"
@@ -109,8 +151,11 @@ def test_run_demo_uses_configured_data_and_writes_report(tmp_path, capsys) -> No
     assert events[-1]["summary"] == report["summary"]
     assert len(model.calls) == 4
     terminal_output = capsys.readouterr().out
-    assert 'Metrics: {"hit@1": 1.0' in terminal_output
-    assert 'Running Summary: {"count": 1, "hit@1": 1.0' in terminal_output
+    assert 'Metrics: {"retrieval": {"F1@1": 0.6666666666666666' in terminal_output
+    assert (
+        'Running Summary: {"count": 1, "retrieval": '
+        '{"F1@1": 0.6666666666666666' in terminal_output
+    )
 
 
 def test_run_demo_can_select_once_and_reuse_pipeline_for_batch(tmp_path) -> None:
@@ -159,7 +204,12 @@ def test_run_demo_can_select_once_and_reuse_pipeline_for_batch(tmp_path) -> None
     )
     config = replace(config, demo=demo)
 
-    report = run_demo(config, model=model, verbose=False)
+    report = run_demo(
+        config,
+        model=model,
+        generation_evaluator=DemoGenerationEvaluator(),
+        verbose=False,
+    )
 
     assert report["summary"]["count"] == 2
     assert report["batch_selection"]["agentic_skill"] == "agentic-vanilla-rag"

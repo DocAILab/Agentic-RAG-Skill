@@ -1,25 +1,81 @@
-"""提供检索命中率与 HotpotQA 风格答案指标。"""
+"""Retrieval metrics with explicit rank cutoffs for comparable evaluation."""
 
 from __future__ import annotations
 
-import re
-import string
-from collections import Counter
+import math
 from collections.abc import Collection, Hashable, Sequence
 from itertools import islice
 
 
-def normalize_answer(answer: str) -> str:
-    """按 HotpotQA 官方口径归一化答案文本。"""
-    if not isinstance(answer, str):
-        raise TypeError("answer must be a string")
+def retrieval_f1(
+    retrieved_ids: Sequence[Hashable],
+    relevant_ids: Collection[Hashable],
+) -> float:
+    """Compute set F1 on Top-n, where n is the number of unique gold ids."""
+    _validate_identifier_collection(retrieved_ids, name="retrieved_ids")
+    _validate_identifier_collection(relevant_ids, name="relevant_ids")
+    gold_count = len(set(relevant_ids))
+    if gold_count == 0:
+        return 0.0
+    return retrieval_f1_at_k(retrieved_ids, relevant_ids, gold_count)
 
-    lowered = answer.lower()
-    without_punctuation = "".join(
-        character for character in lowered if character not in string.punctuation
+
+def retrieval_f1_at_1(
+    retrieved_ids: Sequence[Hashable],
+    relevant_ids: Collection[Hashable],
+) -> float:
+    """Compute set F1 using only the first retrieved document."""
+    return retrieval_f1_at_k(retrieved_ids, relevant_ids, 1)
+
+
+def retrieval_f1_at_k(
+    retrieved_ids: Sequence[Hashable],
+    relevant_ids: Collection[Hashable],
+    k: int,
+) -> float:
+    """Compute set precision/recall F1 over the first k retrieved ids."""
+    _validate_rank_inputs(retrieved_ids, relevant_ids, k)
+    return _set_f1(tuple(islice(retrieved_ids, k)), relevant_ids)
+
+
+def _set_f1(
+    retrieved_ids: Collection[Hashable],
+    relevant_ids: Collection[Hashable],
+) -> float:
+    """Compute F1 between two identifier sets without applying a rank cutoff."""
+    _validate_identifier_collection(retrieved_ids, name="retrieved_ids")
+    _validate_identifier_collection(relevant_ids, name="relevant_ids")
+    retrieved_set = set(retrieved_ids)
+    relevant_set = set(relevant_ids)
+    true_positive = len(retrieved_set & relevant_set)
+    false_positive = len(retrieved_set - relevant_set)
+    false_negative = len(relevant_set - retrieved_set)
+    precision = (
+        true_positive / (true_positive + false_positive)
+        if true_positive + false_positive > 0
+        else 0.0
     )
-    without_articles = re.sub(r"\b(a|an|the)\b", " ", without_punctuation)
-    return " ".join(without_articles.split())
+    recall = (
+        true_positive / (true_positive + false_negative)
+        if true_positive + false_negative > 0
+        else 0.0
+    )
+    if precision + recall == 0:
+        return 0.0
+    return 2 * precision * recall / (precision + recall)
+
+
+def mean_reciprocal_rank(
+    retrieved_ids: Sequence[Hashable],
+    relevant_ids: Collection[Hashable],
+) -> float:
+    """返回首个相关文档名次的倒数，对应 XRAG 的 Mrr。"""
+    _validate_identifier_collection(retrieved_ids, name="retrieved_ids")
+    _validate_identifier_collection(relevant_ids, name="relevant_ids")
+    for index, identifier in enumerate(retrieved_ids):
+        if identifier in relevant_ids:
+            return 1.0 / (index + 1)
+    return 0.0
 
 
 def hit_at_k(
@@ -27,21 +83,18 @@ def hit_at_k(
     relevant_ids: Collection[Hashable],
     k: int,
 ) -> float:
-    """判断前 k 个检索结果中是否至少包含一个相关标识符。"""
-    if isinstance(k, bool) or not isinstance(k, int) or k < 1:
-        raise ValueError("k must be a positive integer")
-    _validate_identifier_collection(retrieved_ids, name="retrieved_ids")
-    _validate_identifier_collection(relevant_ids, name="relevant_ids")
-
-    relevant = set(relevant_ids)
-    return float(any(identifier in relevant for identifier in islice(retrieved_ids, k)))
+    """判断前 k 个检索结果中是否至少包含一个相关文档。"""
+    _validate_rank_inputs(retrieved_ids, relevant_ids, k)
+    return float(
+        any(identifier in relevant_ids for identifier in islice(retrieved_ids, k))
+    )
 
 
 def hit_at_1(
     retrieved_ids: Sequence[Hashable],
     relevant_ids: Collection[Hashable],
 ) -> float:
-    """计算检索结果的 Hit@1。"""
+    """计算与 XRAG ``Hit(retrieval_ids[0:1])`` 相同的 Hit@1。"""
     return hit_at_k(retrieved_ids, relevant_ids, 1)
 
 
@@ -49,7 +102,7 @@ def hit_at_10(
     retrieved_ids: Sequence[Hashable],
     relevant_ids: Collection[Hashable],
 ) -> float:
-    """计算检索结果的 Hit@10。"""
+    """计算与 XRAG ``Hit(retrieval_ids[0:10])`` 相同的 Hit@10。"""
     return hit_at_k(retrieved_ids, relevant_ids, 10)
 
 
@@ -58,13 +111,13 @@ def recall_at_k(
     relevant_ids: Collection[Hashable],
     k: int,
 ) -> float:
-    """计算前 k 个结果覆盖的相关文档比例。"""
+    """计算前 k 个结果覆盖的相关文档比例，供检索实验模块继续使用。"""
     _validate_rank_inputs(retrieved_ids, relevant_ids, k)
-    relevant = set(relevant_ids)
-    if not relevant:
+    relevant_set = set(relevant_ids)
+    if not relevant_set:
         return 0.0
-    retrieved = set(islice(retrieved_ids, k))
-    return len(retrieved & relevant) / len(relevant)
+    retrieved_set = set(islice(retrieved_ids, k))
+    return len(retrieved_set & relevant_set) / len(relevant_set)
 
 
 def all_support_at_k(
@@ -72,88 +125,76 @@ def all_support_at_k(
     relevant_ids: Collection[Hashable],
     k: int,
 ) -> float:
-    """判断前 k 个结果是否覆盖全部多跳支持文档。"""
+    """判断前 k 个结果是否覆盖全部相关文档，供多跳检索实验使用。"""
     _validate_rank_inputs(retrieved_ids, relevant_ids, k)
-    relevant = set(relevant_ids)
-    if not relevant:
+    relevant_set = set(relevant_ids)
+    if not relevant_set:
         return 0.0
-    return float(relevant <= set(islice(retrieved_ids, k)))
+    return float(relevant_set <= set(islice(retrieved_ids, k)))
 
 
 def reciprocal_rank(
     retrieved_ids: Sequence[Hashable],
     relevant_ids: Collection[Hashable],
 ) -> float:
-    """返回第一个相关文档名次的倒数，未命中时返回零。"""
+    """保留既有检索实验 API，并委托给 XRAG MRR 单样本实现。"""
+    return mean_reciprocal_rank(retrieved_ids, relevant_ids)
+
+
+def mean_average_precision(
+    retrieved_ids: Sequence[Hashable],
+    relevant_ids: Sequence[Hashable],
+) -> float:
+    """原样实现 XRAG 的 MAP 公式，而非标准逐位置 Average Precision。"""
+    _validate_identifier_collection(retrieved_ids, name="retrieved_ids")
+    _validate_identifier_sequence(relevant_ids, name="relevant_ids")
+    relevant_sequence = tuple(relevant_ids)
+    if not retrieved_ids or not relevant_sequence:
+        return 0.0
+    score = 0.0
+    for index, identifier in enumerate(relevant_sequence):
+        if identifier in retrieved_ids:
+            score += (index + 1) / (retrieved_ids.index(identifier) + 1)
+    return score / len(relevant_sequence)
+
+
+def discounted_cumulative_gain(
+    retrieved_ids: Sequence[Hashable],
+    relevant_ids: Collection[Hashable],
+) -> float:
+    """按二值相关性和 ``1/log2(rank+1)`` 折扣计算 XRAG DCG。"""
     _validate_identifier_collection(retrieved_ids, name="retrieved_ids")
     _validate_identifier_collection(relevant_ids, name="relevant_ids")
-    relevant = set(relevant_ids)
-    for rank, identifier in enumerate(retrieved_ids, start=1):
-        if identifier in relevant:
-            return 1.0 / rank
-    return 0.0
+    score = 0.0
+    for index, identifier in enumerate(retrieved_ids):
+        if identifier in relevant_ids:
+            score += 1.0 / math.log2(index + 2)
+    return score
 
 
-def exact_match_score(
-    prediction: str,
-    gold_answers: str | Sequence[str],
+def ideal_discounted_cumulative_gain(
+    retrieved_ids: Sequence[Hashable],
+    relevant_ids: Collection[Hashable],
 ) -> float:
-    """计算预测答案对一个或多个标准答案的最大精确匹配分数。"""
-    answers = _normalize_gold_answers(gold_answers)
-    return max(_single_exact_match(prediction, answer) for answer in answers)
+    """按 XRAG 仅前移已检索相关项的特殊规则计算 IDCG。"""
+    _validate_identifier_collection(retrieved_ids, name="retrieved_ids")
+    _validate_identifier_collection(relevant_ids, name="relevant_ids")
+    matched_ids = [
+        identifier for identifier in retrieved_ids if identifier in relevant_ids
+    ]
+    return discounted_cumulative_gain(matched_ids, relevant_ids)
 
 
-def f1_score(
-    prediction: str,
-    gold_answers: str | Sequence[str],
+def normalized_discounted_cumulative_gain(
+    retrieved_ids: Sequence[Hashable],
+    relevant_ids: Collection[Hashable],
 ) -> float:
-    """计算预测答案对一个或多个标准答案的最大词元 F1。"""
-    answers = _normalize_gold_answers(gold_answers)
-    return max(_single_f1(prediction, answer) for answer in answers)
-
-
-def _single_exact_match(prediction: str, gold_answer: str) -> float:
-    """计算单个标准答案的归一化精确匹配分数。"""
-    return float(normalize_answer(prediction) == normalize_answer(gold_answer))
-
-
-def _single_f1(prediction: str, gold_answer: str) -> float:
-    """计算单个标准答案的 HotpotQA 风格词元 F1。"""
-    normalized_prediction = normalize_answer(prediction)
-    normalized_gold = normalize_answer(gold_answer)
-    special_answers = {"yes", "no", "noanswer"}
-    if (
-        normalized_prediction in special_answers
-        or normalized_gold in special_answers
-    ) and normalized_prediction != normalized_gold:
+    """计算 XRAG NDCG，并在 IDCG 为零时返回零。"""
+    dcg_score = discounted_cumulative_gain(retrieved_ids, relevant_ids)
+    idcg_score = ideal_discounted_cumulative_gain(retrieved_ids, relevant_ids)
+    if idcg_score == 0:
         return 0.0
-
-    prediction_tokens = normalized_prediction.split()
-    gold_tokens = normalized_gold.split()
-    common = Counter(prediction_tokens) & Counter(gold_tokens)
-    matching_tokens = sum(common.values())
-    if matching_tokens == 0:
-        return 0.0
-
-    precision = matching_tokens / len(prediction_tokens)
-    recall = matching_tokens / len(gold_tokens)
-    return 2 * precision * recall / (precision + recall)
-
-
-def _normalize_gold_answers(gold_answers: str | Sequence[str]) -> tuple[str, ...]:
-    """把单答案或答案别名序列统一为非空字符串元组。"""
-    if isinstance(gold_answers, str):
-        return (gold_answers,)
-    if isinstance(gold_answers, (bytes, bytearray)) or not isinstance(
-        gold_answers, Sequence
-    ):
-        raise TypeError("gold_answers must be a string or a sequence of strings")
-    answers = tuple(gold_answers)
-    if not answers:
-        raise ValueError("gold_answers must not be empty")
-    if not all(isinstance(answer, str) for answer in answers):
-        raise TypeError("gold_answers must contain only strings")
-    return answers
+    return dcg_score / idcg_score
 
 
 def _validate_identifier_collection(
@@ -161,7 +202,7 @@ def _validate_identifier_collection(
     *,
     name: str,
 ) -> None:
-    """校验检索标识符集合，避免字符串被误当作标识符序列。"""
+    """校验文档标识符集合，避免把单个字符串误当作 ID 序列。"""
     if isinstance(identifiers, (str, bytes, bytearray)) or not isinstance(
         identifiers, Collection
     ):
@@ -170,7 +211,25 @@ def _validate_identifier_collection(
         raise TypeError(f"{name} must contain only hashable identifiers")
 
 
-def _validate_rank_inputs(retrieved_ids, relevant_ids, k):
+def _validate_identifier_sequence(
+    identifiers: Sequence[Hashable],
+    *,
+    name: str,
+) -> None:
+    """校验需要稳定顺序的文档标识符序列。"""
+    if isinstance(identifiers, (str, bytes, bytearray)) or not isinstance(
+        identifiers, Sequence
+    ):
+        raise TypeError(f"{name} must be an ordered sequence of identifiers")
+    _validate_identifier_collection(identifiers, name=name)
+
+
+def _validate_rank_inputs(
+    retrieved_ids: Sequence[Hashable],
+    relevant_ids: Collection[Hashable],
+    k: int,
+) -> None:
+    """校验带截断名次的检索指标输入。"""
     if isinstance(k, bool) or not isinstance(k, int) or k < 1:
         raise ValueError("k must be a positive integer")
     _validate_identifier_collection(retrieved_ids, name="retrieved_ids")

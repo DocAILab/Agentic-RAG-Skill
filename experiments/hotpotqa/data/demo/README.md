@@ -24,7 +24,7 @@ python -B experiments/hotpotqa/scripts/build_demo.py
 python -B run_demo.py
 ```
 
-入口从 `framework/settings.yaml` 的 `demo` 段读取 corpus、测试集、样本数量、请求参数和结果路径，自动完成三级 Skill 选择、检索生成、Hit@1/Hit@10/EM/F1 测评及结果保存。安装项目后也可以直接运行 `ragskill-demo`。
+入口从 `framework/settings.yaml` 的 `demo` 段读取 corpus、测试集、样本数量、请求参数和结果路径，自动完成三级 Skill 选择、检索生成、XRAG 对齐的八项检索指标和九项生成指标测评及结果保存。安装项目后也可以直接运行 `ragskill-demo`。
 
 默认配置运行全部 100 题，在共享的 2000 篇语料上允许模型自适应选择 Retriever。常用配置调整：
 
