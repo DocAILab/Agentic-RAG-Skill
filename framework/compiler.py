@@ -6,6 +6,7 @@ import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 
 from .interfaces import ComponentContext
@@ -20,6 +21,12 @@ from .spec import (
     discover_specs,
     load_runtime_callable,
     load_spec,
+)
+from .vector_index import (
+    DenseVectorIndex,
+    build_or_load_vector_index,
+    embedding_model_fingerprint,
+    vector_index_cache_key,
 )
 
 ComponentCallable = Callable[[Mapping[str, Any], ComponentContext], Mapping[str, Any]]
@@ -44,6 +51,36 @@ class RuntimeComponentContext:
         "You are the frozen Executor Model. Follow the Component prompt and do not "
         "modify model parameters or Skill definitions."
     )
+    vector_index_cache_dir: Path | None = None
+    embedding_fingerprint: str | None = None
+    _embedding_cache: dict[str, tuple[float, ...]] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
+    _embedding_cache_hits: int = field(default=0, init=False, repr=False)
+    _embedding_cache_misses: int = field(default=0, init=False, repr=False)
+    _vector_indexes: dict[str, DenseVectorIndex] = field(
+        default_factory=dict,
+        init=False,
+        repr=False,
+    )
+    _vector_index_builds: int = field(default=0, init=False, repr=False)
+    _vector_index_disk_loads: int = field(default=0, init=False, repr=False)
+    _vector_index_memory_hits: int = field(default=0, init=False, repr=False)
+    _vector_index_queries: int = field(default=0, init=False, repr=False)
+    _last_vector_index: dict[str, Any] | None = field(
+        default=None,
+        init=False,
+        repr=False,
+    )
+
+    def __post_init__(self) -> None:
+        """规范化缓存目录，并在未显式提供时推导 Embedding 模型指纹。"""
+        if self.vector_index_cache_dir is not None:
+            self.vector_index_cache_dir = Path(self.vector_index_cache_dir).resolve()
+        if self.embedding_model is not None and self.embedding_fingerprint is None:
+            self.embedding_fingerprint = embedding_model_fingerprint(self.embedding_model)
 
     def call_model(
         self,
@@ -61,12 +98,128 @@ class RuntimeComponentContext:
         )
 
     def embed(self, texts: Sequence[str]) -> Sequence[Sequence[float]]:
-        """调用可选向量服务，并在未配置时给出明确错误。"""
+        """只编码缓存中缺失的文本，并按原输入顺序返回全部向量。"""
         if self.embedding_model is None:
             raise ExecutionError(
                 "Selected Component requires embeddings, but no embedding_model was provided"
             )
-        return self.embedding_model.embed(texts)
+        normalized = [str(text) for text in texts]
+        if not normalized:
+            return []
+
+        missing = []
+        pending: set[str] = set()
+        for text in normalized:
+            if text not in self._embedding_cache and text not in pending:
+                missing.append(text)
+                pending.add(text)
+
+        if missing:
+            encoded = list(self.embedding_model.embed(missing))
+            if len(encoded) != len(missing):
+                raise ExecutionError(
+                    "Embedding model vector count does not match uncached texts"
+                )
+            try:
+                cached_vectors = [
+                    tuple(float(value) for value in vector) for vector in encoded
+                ]
+            except (TypeError, ValueError) as exc:
+                raise ExecutionError(
+                    "Embedding model returned a non-numeric vector"
+                ) from exc
+            self._embedding_cache.update(
+                dict(zip(missing, cached_vectors, strict=True))
+            )
+
+        self._embedding_cache_misses += len(missing)
+        self._embedding_cache_hits += len(normalized) - len(missing)
+        return [self._embedding_cache[text] for text in normalized]
+
+    def embedding_cache_info(self) -> dict[str, int]:
+        """返回当前运行中向量缓存的条目数、命中数和未命中数。"""
+        return {
+            "entries": len(self._embedding_cache),
+            "hits": self._embedding_cache_hits,
+            "misses": self._embedding_cache_misses,
+        }
+
+    def search_vector_index(
+        self,
+        *,
+        query_text: str,
+        document_ids: Sequence[str],
+        document_texts: Sequence[str],
+        top_k: int,
+        text_format_version: str,
+    ) -> Sequence[tuple[int, float]]:
+        """加载或构建共享语料索引，并仅编码查询后执行向量检索。"""
+        if self.embedding_model is None or self.embedding_fingerprint is None:
+            raise ExecutionError(
+                "Selected Component requires embeddings, but no embedding_model was provided"
+            )
+        normalized_ids = tuple(str(document_id) for document_id in document_ids)
+        normalized_texts = tuple(str(text) for text in document_texts)
+        cache_key = vector_index_cache_key(
+            normalized_ids,
+            normalized_texts,
+            embedding_fingerprint=self.embedding_fingerprint,
+            text_format_version=text_format_version,
+        )
+        index = self._vector_indexes.get(cache_key)
+        if index is None:
+            index = build_or_load_vector_index(
+                normalized_ids,
+                normalized_texts,
+                embed=self.embedding_model.embed,
+                embedding_fingerprint=self.embedding_fingerprint,
+                text_format_version=text_format_version,
+                cache_root=self.vector_index_cache_dir,
+            )
+            self._vector_indexes[cache_key] = index
+            if index.source == "disk":
+                self._vector_index_disk_loads += 1
+            else:
+                self._vector_index_builds += 1
+            source = index.source
+        else:
+            self._vector_index_memory_hits += 1
+            source = "memory"
+
+        query_vectors = self.embed([query_text])
+        if len(query_vectors) != 1:
+            raise ExecutionError("Embedding model did not return one query vector")
+        results = index.search(query_vectors[0], top_k)
+        self._vector_index_queries += 1
+        self._last_vector_index = {
+            "cache_key": index.cache_key,
+            "source": source,
+            "cache_path": str(index.cache_path) if index.cache_path is not None else None,
+            "document_count": len(index.document_ids),
+            "dimension": index.dimension,
+        }
+        return results
+
+    def vector_index_cache_info(self) -> dict[str, Any]:
+        """返回持久化索引的构建、加载、内存命中及最近查询状态。"""
+        return {
+            "enabled": self.vector_index_cache_dir is not None,
+            "cache_dir": (
+                str(self.vector_index_cache_dir)
+                if self.vector_index_cache_dir is not None
+                else None
+            ),
+            "builds": self._vector_index_builds,
+            "disk_loads": self._vector_index_disk_loads,
+            "memory_hits": self._vector_index_memory_hits,
+            "queries": self._vector_index_queries,
+            "active_indexes": len(self._vector_indexes),
+            "last_index": (
+                dict(self._last_vector_index)
+                if self._last_vector_index is not None
+                else None
+            ),
+        }
 
 
 @dataclass(slots=True)
@@ -74,7 +227,21 @@ class BoundComponentInvoker:
     """将 Agentic 槽位调用转发给已选中的具体 Component 函数。"""
 
     bindings: Mapping[str, tuple[ComponentCallable, ...]]
+    binding_names: Mapping[str, tuple[str, ...]]
     context: ComponentContext
+    _call_timings: list[dict[str, Any]] = field(
+        default_factory=list,
+        init=False,
+        repr=False,
+    )
+
+    def start_run(self) -> None:
+        """在执行新问题前清空上一题的组件耗时记录。"""
+        self._call_timings.clear()
+
+    def call_timings(self) -> list[dict[str, Any]]:
+        """复制并返回当前问题已经完成的组件耗时记录。"""
+        return [dict(timing) for timing in self._call_timings]
 
     def has(self, slot: str) -> bool:
         """判断槽位是否至少绑定了一个具体组件。"""
@@ -95,11 +262,32 @@ class BoundComponentInvoker:
             raise ExecutionError(
                 f"Component slot '{slot}' has no binding at index {index}"
             )
-        result = functions[index](dict(inputs), self.context)
-        if not isinstance(result, Mapping):
-            raise ExecutionError(
-                f"Component slot '{slot}' returned a non-mapping result"
+        component_name = self.binding_names[slot][index]
+        started_at = perf_counter()
+        try:
+            result = functions[index](dict(inputs), self.context)
+            if not isinstance(result, Mapping):
+                raise ExecutionError(
+                    f"Component slot '{slot}' returned a non-mapping result"
+                )
+        except Exception:
+            self._call_timings.append(
+                {
+                    "slot": slot,
+                    "component": component_name,
+                    "duration_seconds": round(perf_counter() - started_at, 6),
+                    "status": "failed",
+                }
             )
+            raise
+        self._call_timings.append(
+            {
+                "slot": slot,
+                "component": component_name,
+                "duration_seconds": round(perf_counter() - started_at, 6),
+                "status": "completed",
+            }
+        )
         return dict(result)
 
     def call_all(
@@ -140,10 +328,13 @@ class CompiledRAGCommand:
 
     def run(self, request: Mapping[str, Any]) -> dict[str, Any]:
         """执行已绑定的 Agentic workflow，并校验最终结果。"""
+        self._components.start_run()
         result = self._workflow(dict(request), self._components)
         if not isinstance(result, Mapping):
             raise ExecutionError("Agentic workflow returned a non-mapping result")
-        return dict(result)
+        normalized = dict(result)
+        normalized["component_timings"] = self._components.call_timings()
+        return normalized
 
     def __call__(self, request: Mapping[str, Any]) -> dict[str, Any]:
         """允许将已编译命令作为普通 Python 函数直接调用。"""
@@ -190,6 +381,8 @@ def run_rag(
     skill_root: str | Path,
     embedding_model: EmbeddingClient | None = None,
     manage_skill: str = "manage-rag-default",
+    vector_index_cache_dir: str | Path | None = None,
+    embedding_fingerprint: str | None = None,
 ) -> dict[str, Any]:
     """用一次调用完成三级 LLM 选择、编译绑定、检索与答案生成。"""
     plan = select_rag_plan(
@@ -201,6 +394,12 @@ def run_rag(
     context = RuntimeComponentContext(
         executor_model=model,
         embedding_model=embedding_model,
+        vector_index_cache_dir=(
+            Path(vector_index_cache_dir)
+            if vector_index_cache_dir is not None
+            else None
+        ),
+        embedding_fingerprint=embedding_fingerprint,
     )
     command = compile_rag_command(plan, skill_root=skill_root, context=context)
     result = command.run(request)
@@ -272,7 +471,11 @@ def _compile_selected(
         workflow_name=workflow_spec.package_name,
         binding_names=normalized_bindings,
         _workflow=workflow,
-        _components=BoundComponentInvoker(callable_bindings, context),
+        _components=BoundComponentInvoker(
+            callable_bindings,
+            normalized_bindings,
+            context,
+        ),
     )
 
 

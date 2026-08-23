@@ -20,6 +20,14 @@ ragskill-demo = "framework.demo:main"
 embedding = [
     "sentence-transformers>=3.0",
 ]
+evaluation = [
+    "jiwer>=3.1,<4",
+    "nltk>=3.6.6,<4",
+    "rouge-score==0.0.4",
+    "sacrebleu>=2.0,<3",
+    "torch>=2.3",
+    "transformers>=4.42,<5",
+]
 experiment = [
     "datasets>=3.0",
     "pyarrow>=15.0",

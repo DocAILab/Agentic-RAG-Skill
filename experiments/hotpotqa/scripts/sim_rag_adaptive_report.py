@@ -3,21 +3,25 @@
 import re
 from datetime import UTC, datetime
 
+from experiments.hotpotqa.scripts.metrics import evaluate_hotpotqa
 from experiments.hotpotqa.scripts.run_sim_rag import (
     _answers,
     _summary,
     _write_json,
 )
-from framework import EvaluationExample, evaluate_example
 
 
 def evaluate_result(example, result):
-    return EvaluationExample(
-        prediction=result["answer"],
-        gold_answers=_answers(example),
-        retrieved_ids=[str(item["id"]) for item in result["documents"]],
-        relevant_ids=example["relevant_document_ids"],
-    )
+    retrieved_ids = [str(item["id"]) for item in result["documents"]]
+    return {
+        "retrieved_ids": retrieved_ids,
+        "metrics": evaluate_hotpotqa(
+            result["answer"],
+            _answers(example),
+            retrieved_ids,
+            example["relevant_document_ids"],
+        ),
+    }
 
 
 def success_record(example, result, evaluation, component_result, *, attempts=1):
@@ -34,8 +38,8 @@ def success_record(example, result, evaluation, component_result, *, attempts=1)
             },
             "reason": component_result.reason,
         },
-        "metrics": evaluate_example(evaluation).to_dict(),
-        "retrieved_document_ids": list(evaluation.retrieved_ids),
+        "metrics": evaluation["metrics"],
+        "retrieved_document_ids": list(evaluation["retrieved_ids"]),
         "relevant_document_ids": example["relevant_document_ids"],
         "trace": result.get("trace", []),
     }

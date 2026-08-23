@@ -25,4 +25,4 @@ Output `RetrievalResult`:
 
 ## Execution
 
-Run `scripts/component.py:run(inputs, context)`. The runtime must provide `context.embed(texts)`. This Component performs similarity retrieval only and does not select a model or another Skill.
+Run `scripts/component.py:run(inputs, context)`. The runtime must provide `context.embed(texts)`. When the runtime additionally provides `context.search_vector_index(...)`, the Component uses its persistent corpus index; otherwise it falls back to direct embedding and cosine scoring. This optional acceleration keeps the Skill executable in Claude Code and other Agent environments that only implement the basic embedding contract. This Component performs similarity retrieval only and does not select a model or another Skill.

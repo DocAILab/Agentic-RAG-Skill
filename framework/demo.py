@@ -12,9 +12,20 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
-from .compiler import RuntimeComponentContext, compile_rag_command
-from .config import FrameworkConfig, create_clients_from_config, load_framework_config
-from .evaluation import EvaluationExample, evaluate_batch, evaluate_example
+from .compiler import CompiledRAGCommand, RuntimeComponentContext, compile_rag_command
+from .config import (
+    FrameworkConfig,
+    create_clients_from_config,
+    embedding_service_fingerprint,
+    load_framework_config,
+)
+from .evaluation import (
+    EvaluationExample,
+    ExampleMetrics,
+    GenerationEvaluator,
+    evaluate_example,
+    summarize_metrics,
+)
 from .models import EmbeddingClient, ModelClient
 from .selection import (
     RAGSelectionPlan,
@@ -48,11 +59,107 @@ class DemoEventLogger:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
+def _select_and_compile(
+    request: Mapping[str, Any],
+    *,
+    config: FrameworkConfig,
+    model: ModelClient,
+    runtime_context: RuntimeComponentContext,
+    event_log: DemoEventLogger,
+    selection_scope: str,
+    question_id: str | None = None,
+) -> tuple[RAGSelectionPlan, CompiledRAGCommand]:
+    """执行一次三级 Skill 选择、记录阶段日志并编译可复用命令。"""
+    identity = {
+        "selection_scope": selection_scope,
+        **({"question_id": question_id} if question_id is not None else {}),
+    }
+    manage_result = run_manage_stage(
+        request,
+        model=model,
+        skill_root=config.skill_root,
+        manage_skill=config.manage_skill,
+    )
+    event_log.write(
+        "manage_completed",
+        **identity,
+        manage_skill=manage_result.manage_skill,
+        guidance=manage_result.guidance,
+        reason=manage_result.reason,
+    )
+    agentic_result = select_agentic_skill(
+        request,
+        manage_result=manage_result,
+        model=model,
+        skill_root=config.skill_root,
+    )
+    event_log.write(
+        "agentic_selected",
+        **identity,
+        agentic_skill=agentic_result.spec.package_name,
+        reason=agentic_result.reason,
+    )
+    component_result = select_component_skills(
+        request,
+        agentic_result=agentic_result,
+        model=model,
+        skill_root=config.skill_root,
+    )
+    event_log.write(
+        "components_selected",
+        **identity,
+        component_bindings={
+            slot: list(names) for slot, names in component_result.bindings.items()
+        },
+        reason=component_result.reason,
+    )
+    plan = RAGSelectionPlan(
+        manage_skill=manage_result.manage_skill,
+        manage_guidance=manage_result.guidance,
+        manage_reason=manage_result.reason,
+        agentic_skill=agentic_result.spec.package_name,
+        agentic_reason=agentic_result.reason,
+        component_bindings=component_result.bindings,
+        component_reason=component_result.reason,
+    )
+    command = compile_rag_command(
+        plan,
+        skill_root=config.skill_root,
+        context=runtime_context,
+    )
+    event_log.write(
+        "command_compiled",
+        **identity,
+        instruction=command.instruction,
+    )
+    return plan, command
+
+
+def _sample_batch_queries(
+    examples: Sequence[Mapping[str, Any]],
+    sample_size: int,
+) -> list[str]:
+    """沿批次顺序均匀抽取问题文本，确定性覆盖整个测试范围。"""
+    total = len(examples)
+    if total <= sample_size:
+        sampled_examples = examples
+    elif sample_size == 1:
+        sampled_examples = [examples[total // 2]]
+    else:
+        indices = [
+            round(position * (total - 1) / (sample_size - 1))
+            for position in range(sample_size)
+        ]
+        sampled_examples = [examples[index] for index in indices]
+    return [_required_text(example, "question") for example in sampled_examples]
+
+
 def run_demo(
     config: FrameworkConfig,
     *,
     model: ModelClient | None = None,
     embedding_model: EmbeddingClient | None = None,
+    generation_evaluator: GenerationEvaluator | None = None,
     max_examples: int | None = None,
     verbose: bool = True,
 ) -> dict[str, Any]:
@@ -76,6 +183,13 @@ def run_demo(
         result_path=str(demo.result_path),
         max_examples=(max_examples if max_examples is not None else demo.max_examples),
         candidate_documents_only=demo.candidate_documents_only,
+        select_skills_per_example=demo.select_skills_per_example,
+        batch_selection_query_sample_size=demo.batch_selection_query_sample_size,
+        vector_index_cache_dir=(
+            str(config.vector_index.cache_dir)
+            if config.vector_index is not None
+            else None
+        ),
         request=dict(demo.request),
     )
 
@@ -94,6 +208,14 @@ def run_demo(
     runtime_context = RuntimeComponentContext(
         executor_model=model,
         embedding_model=embedding_model,
+        vector_index_cache_dir=(
+            config.vector_index.cache_dir if config.vector_index is not None else None
+        ),
+        embedding_fingerprint=(
+            embedding_service_fingerprint(config.embedding)
+            if config.embedding is not None
+            else None
+        ),
     )
 
     corpus_records = _load_jsonl(demo.corpus_path)
@@ -112,9 +234,43 @@ def run_demo(
         selected_examples=len(selected_tests),
     )
 
-    evaluation_examples: list[EvaluationExample] = []
+    evaluated_metrics: list[ExampleMetrics] = []
     output_examples: list[dict[str, Any]] = []
     total = len(selected_tests)
+    batch_plan: RAGSelectionPlan | None = None
+    batch_command: CompiledRAGCommand | None = None
+    if not demo.select_skills_per_example:
+        sampled_queries = _sample_batch_queries(
+            selected_tests,
+            demo.batch_selection_query_sample_size,
+        )
+        batch_request = {
+            **config.request_defaults,
+            **demo.request,
+            "query": "Select one reusable RAG workflow for this evaluation batch.",
+            "sampled_queries": sampled_queries,
+            "query_count": total,
+            "sampled_query_count": len(sampled_queries),
+            "documents": corpus_records,
+        }
+        try:
+            batch_plan, batch_command = _select_and_compile(
+                batch_request,
+                config=config,
+                model=model,
+                runtime_context=runtime_context,
+                event_log=event_log,
+                selection_scope="batch",
+            )
+        except Exception as exc:
+            event_log.write(
+                "run_failed",
+                selection_scope="batch",
+                error_type=type(exc).__name__,
+                error=_safe_error_message(exc),
+            )
+            raise
+
     for index, example in enumerate(selected_tests, start=1):
         question_id = _required_text(example, "id")
         question = _required_text(example, "question")
@@ -143,65 +299,19 @@ def run_demo(
             input_document_ids=[document["id"] for document in documents],
         )
         try:
-            manage_result = run_manage_stage(
-                request,
-                model=model,
-                skill_root=config.skill_root,
-                manage_skill=config.manage_skill,
-            )
-            event_log.write(
-                "manage_completed",
-                question_id=question_id,
-                manage_skill=manage_result.manage_skill,
-                guidance=manage_result.guidance,
-                reason=manage_result.reason,
-            )
-            agentic_result = select_agentic_skill(
-                request,
-                manage_result=manage_result,
-                model=model,
-                skill_root=config.skill_root,
-            )
-            event_log.write(
-                "agentic_selected",
-                question_id=question_id,
-                agentic_skill=agentic_result.spec.package_name,
-                reason=agentic_result.reason,
-            )
-            component_result = select_component_skills(
-                request,
-                agentic_result=agentic_result,
-                model=model,
-                skill_root=config.skill_root,
-            )
-            event_log.write(
-                "components_selected",
-                question_id=question_id,
-                component_bindings={
-                    slot: list(names)
-                    for slot, names in component_result.bindings.items()
-                },
-                reason=component_result.reason,
-            )
-            plan = RAGSelectionPlan(
-                manage_skill=manage_result.manage_skill,
-                manage_guidance=manage_result.guidance,
-                manage_reason=manage_result.reason,
-                agentic_skill=agentic_result.spec.package_name,
-                agentic_reason=agentic_result.reason,
-                component_bindings=component_result.bindings,
-                component_reason=component_result.reason,
-            )
-            command = compile_rag_command(
-                plan,
-                skill_root=config.skill_root,
-                context=runtime_context,
-            )
-            event_log.write(
-                "command_compiled",
-                question_id=question_id,
-                instruction=command.instruction,
-            )
+            if demo.select_skills_per_example:
+                plan, command = _select_and_compile(
+                    request,
+                    config=config,
+                    model=model,
+                    runtime_context=runtime_context,
+                    event_log=event_log,
+                    selection_scope="example",
+                    question_id=question_id,
+                )
+            else:
+                assert batch_plan is not None and batch_command is not None
+                plan, command = batch_plan, batch_command
             result = command.run(request)
             result["selection"] = plan.to_dict()
             result["compiled_instruction"] = command.instruction
@@ -226,8 +336,12 @@ def run_demo(
             retrieved_ids=retrieved_ids,
             relevant_ids=relevant_ids,
         )
-        metrics = evaluate_example(evaluation)
-        evaluation_examples.append(evaluation)
+        metrics = evaluate_example(
+            evaluation,
+            generation_evaluator=generation_evaluator,
+        )
+        evaluated_metrics.append(metrics)
+        running_summary = summarize_metrics(evaluated_metrics).to_dict()
         selection_value = result.get("selection", {})
         selection = (
             dict(selection_value) if isinstance(selection_value, Mapping) else {}
@@ -238,12 +352,16 @@ def run_demo(
             retrieved_document_ids=retrieved_ids,
             prediction=result["answer"],
             trace=result.get("trace", []),
+            component_timings=result.get("component_timings", []),
+            embedding_cache=runtime_context.embedding_cache_info(),
+            vector_index_cache=runtime_context.vector_index_cache_info(),
             compiled_instruction=result.get("compiled_instruction"),
         )
         event_log.write(
             "evaluation_completed",
             question_id=question_id,
             metrics=metrics.to_dict(),
+            running_summary=running_summary,
         )
         output_examples.append(
             {
@@ -256,10 +374,8 @@ def run_demo(
                 "relevant_document_ids": relevant_ids,
                 "selection": selection,
                 "trace": result.get("trace", []),
-                "iteration_support": _iteration_support(
-                    result.get("trace", []),
-                    relevant_ids,
-                ),
+                "component_timings": result.get("component_timings", []),
+                "vector_index_cache": runtime_context.vector_index_cache_info(),
                 "compiled_instruction": result.get("compiled_instruction"),
             }
         )
@@ -276,8 +392,20 @@ def run_demo(
                 ),
             )
             print("Metrics:", json.dumps(metrics.to_dict(), ensure_ascii=False))
+            print(
+                "Component Timings:",
+                json.dumps(result.get("component_timings", []), ensure_ascii=False),
+            )
+            print(
+                "Vector Index Cache:",
+                json.dumps(
+                    runtime_context.vector_index_cache_info(),
+                    ensure_ascii=False,
+                ),
+            )
+            print("Running Summary:", json.dumps(running_summary, ensure_ascii=False))
 
-    summary = evaluate_batch(evaluation_examples)
+    summary = summarize_metrics(evaluated_metrics)
     report = {
         "schema_version": 2,
         "run_id": event_log.run_id,
@@ -286,12 +414,24 @@ def run_demo(
             "corpus_path": str(demo.corpus_path),
             "test_path": str(demo.test_path),
             "candidate_documents_only": demo.candidate_documents_only,
+            "select_skills_per_example": demo.select_skills_per_example,
+            "batch_selection_query_sample_size": (
+                demo.batch_selection_query_sample_size
+            ),
+            "vector_index_cache_dir": (
+                str(config.vector_index.cache_dir)
+                if config.vector_index is not None
+                else None
+            ),
         },
         "artifacts": {
             "result_path": str(demo.result_path),
             "log_path": str(demo.log_path),
         },
         "summary": summary.to_dict(),
+        "batch_selection": (
+            batch_plan.to_dict() if batch_plan is not None else None
+        ),
         "examples": output_examples,
     }
     _write_report(demo.result_path, report)
@@ -442,30 +582,6 @@ def _write_report(path: Path, report: Mapping[str, Any]) -> None:
 def _safe_error_message(error: Exception) -> str:
     """移除错误文本中可能出现的 OpenAI 风格密钥。"""
     return re.sub(r"sk-[A-Za-z0-9_-]{8,}", "[REDACTED]", str(error))
-
-
-def _iteration_support(trace: Any, relevant_ids: Sequence[str]) -> list[dict[str, Any]]:
-    """Summarize supporting-document coverage after every iterative round."""
-    if isinstance(trace, (str, bytes, bytearray)) or not isinstance(trace, Sequence):
-        return []
-    relevant = set(relevant_ids)
-    summaries = []
-    for event in trace:
-        if not isinstance(event, Mapping) or event.get("step") != "iteration":
-            continue
-        document_ids = set(event.get("document_ids", ()))
-        new_ids = set(event.get("new_document_ids", ()))
-        supporting = document_ids & relevant
-        summaries.append(
-            {
-                "iteration": event.get("iteration"),
-                "supporting_document_count": len(supporting),
-                "new_supporting_document_count": len(new_ids & relevant),
-                "support_recall": len(supporting) / len(relevant) if relevant else 0.0,
-                "all_support": float(bool(relevant) and relevant <= document_ids),
-            }
-        )
-    return summaries
 
 
 if __name__ == "__main__":

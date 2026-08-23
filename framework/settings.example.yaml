@@ -9,12 +9,17 @@ skills:
   manage_skill: manage-rag-default
 
 runtime:
+  vector_index:
+    # true 时将语料向量矩阵持久化；false 仅在当前 Python 进程中复用。
+    enabled: true
+    # 相对 framework/settings*.yaml 解析。目录键自动包含语料、Embedding 配置和文本格式哈希。
+    cache_dir: ../experiments/hotpotqa/cache/vector-indexes
   # 这些值只在一次 RAG request 未提供同名字段时生效；调用时传入的值优先级更高。
   request_defaults:
     # Retriever 默认返回的文档数。较大通常提高召回，但增加后续上下文、延迟和 token 成本。
     top_k: 3
     # Generator 单次返回的最大 token 数；不是输入上下文长度。
-    max_tokens: 512
+    max_tokens: 8192
     # RRFusion 的倒数排名融合常数 k；分数形式为 1 / (k + rank)，一般保持 60。
     rank_constant: 60
 
@@ -27,18 +32,18 @@ demo:
     result_path: ../experiments/hotpotqa/outputs/demo_results.json
     # 中间过程结构化日志，JSON Lines 格式并按运行追加。
     log_path: ../experiments/hotpotqa/outputs/demo.log.jsonl
-  # 1 适合连通测试；20 跑完整 demo；null 表示读取 test.jsonl 中的全部样本。
-  max_examples: 1
-  # true 每题只使用原始 10 篇 distractor，false 使用完整 200 篇共享小语料。
-  candidate_documents_only: true
+  # 1 适合连通测试；100 跑完整 demo；null 表示读取 test.jsonl 中的全部样本。
+  max_examples: 100
+  # true 每题只使用原始 10 篇 distractor，false 使用完整 2000 篇共享语料。
+  candidate_documents_only: false
+  # true 每题独立选择一次 Skill；false 整批问题只选择和编译一次，随后复用同一 RAG 流程。
+  select_skills_per_example: true
+  # 批次只选择一次时，均匀抽样多少条问题文本供模型决策；不会发送全部问题，默认 20。
+  batch_selection_query_sample_size: 20
   request:
     top_k: 10
-    max_tokens: 256
-    # 删除这个 constraints 映射即可让模型自行选择 BM25 或 Vector Retriever。
-    constraints:
-      retrieval: lexical-only
-      allowed_retriever: BM25
-      purpose: HotpotQA demo
+    # 推理模型可能先消耗大量输出预算进行 reasoning；默认使用 8192，调用时可显式覆盖。
+    max_tokens: 8192
 
 executor:
   # 候选协议：openai-compatible 适配 VVEAI/vLLM/SGLang/Ollama；openai 是其别名；
@@ -53,12 +58,17 @@ executor:
   # 直写，可把 api_key_env 改为 null，并将 api_key 改为真实值。
   api_key: null
   api_key_env: VVEAI_API_KEY
-  # HTTP 连接与响应总超时时间（秒）。
-  timeout_seconds: 120
+  # HTTP 连接与响应总超时时间（秒）；8192 输出预算下默认允许最多等待 10 分钟。
+  timeout_seconds: 600
   # 额外 HTTP 头；Authorization 已自动设置，通常留空。
   extra_headers: {}
-  # OpenAI-compatible 通常留空；Anthropic 可设置 api_version、default_max_tokens。
-  options: {}
+  # provider 专用参数。max_retries 是首次请求失败后的额外尝试次数；这里最多请求 3 次。
+  # retry_backoff_seconds 是指数退避初值，2 表示两次重试前分别等待 2 秒、4 秒。
+  # 仅重试 408、429、5xx（含 524）和网络错误；400 等确定性错误不会重试。
+  # 还可用 default_max_tokens 覆盖客户端的 8192 默认值；Anthropic 可设置 api_version。
+  options:
+    max_retries: 2
+    retry_backoff_seconds: 2.0
 
 embedding:
   # false 会禁用向量客户端，适合仅测试 BM25；Vector Retriever 运行时要求这里为 true。
@@ -73,7 +83,7 @@ embedding:
   api_key: null
   api_key_env: null
   # 本地 provider 不使用该通用 HTTP 超时字段。
-  timeout_seconds: 120
+  timeout_seconds: 600
   # 本地 provider 必须保持空映射。
   extra_headers: {}
   # device=null 自动选择设备；显存不足可减小 batch_size；归一化适合余弦相似度检索。

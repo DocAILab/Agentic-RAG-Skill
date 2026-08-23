@@ -22,11 +22,12 @@ DEFAULT_SOURCE = (
 )
 DEFAULT_OUTPUT = EXPERIMENT_ROOT / "data" / "demo"
 DEFAULT_SEED = 20260807
+CORPUS_DOCUMENT_COUNT = 2000
 STRATUM_QUOTAS = {
-    ("bridge", "span"): 10,
-    ("comparison", "span"): 6,
-    ("comparison", "yes"): 2,
-    ("comparison", "no"): 2,
+    ("bridge", "span"): 50,
+    ("comparison", "span"): 30,
+    ("comparison", "yes"): 10,
+    ("comparison", "no"): 10,
 }
 
 
@@ -63,6 +64,12 @@ def select_demo_rows(
     """按问题类型和答案类型配额确定性选择 demo 样本。"""
     buckets: dict[tuple[str, str], list[Mapping[str, Any]]] = defaultdict(list)
     for row in rows:
+        if str(row["level"]) != "hard":
+            continue
+        context = _required_mapping(row, "context")
+        titles = [str(title) for title in _required_sequence(context, "title")]
+        if len(titles) != 10 or len(set(titles)) != 10:
+            continue
         key = (str(row["type"]), _answer_kind(str(row["answer"])))
         buckets[key].append(row)
 
@@ -83,40 +90,22 @@ def select_demo_rows(
 
 def build_records(
     rows: Sequence[Mapping[str, Any]],
+    *,
+    corpus_source_rows: Sequence[Mapping[str, Any]] = (),
+    corpus_document_count: int | None = None,
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """构造共享小语料库和带检索监督的测试样本。"""
+    """构造测试监督，并从额外源样本确定性补足共享语料库。"""
     corpus_by_id: dict[str, dict[str, Any]] = {}
     source_questions: dict[str, set[str]] = defaultdict(set)
     tests: list[dict[str, Any]] = []
 
     for row in rows:
         question_id = str(row["id"])
-        context = _required_mapping(row, "context")
-        titles = _required_sequence(context, "title")
-        sentence_groups = _required_sequence(context, "sentences")
-        if len(titles) != len(sentence_groups):
-            raise ValueError(f"Context lengths do not match for question {question_id}")
-
-        candidate_ids: list[str] = []
-        for title_value, sentence_values in zip(
-            titles,
-            sentence_groups,
-            strict=True,
-        ):
-            title = str(title_value)
-            sentences = [str(sentence).strip() for sentence in sentence_values]
-            document = {
-                "id": title,
-                "title": title,
-                "text": " ".join(sentence for sentence in sentences if sentence),
-                "sentences": sentences,
-            }
-            existing = corpus_by_id.get(title)
-            if existing is not None and existing["sentences"] != sentences:
-                raise ValueError(f"Conflicting contexts found for title: {title}")
-            corpus_by_id[title] = document
-            source_questions[title].add(question_id)
-            candidate_ids.append(title)
+        candidate_ids = _add_context_documents(
+            row,
+            corpus_by_id=corpus_by_id,
+            source_questions=source_questions,
+        )
 
         supporting = _build_supporting_facts(row, question_id)
         relevant_ids = list(
@@ -142,6 +131,26 @@ def build_records(
                 "candidate_document_ids": candidate_ids,
             }
         )
+
+    if corpus_document_count is not None:
+        if corpus_document_count < len(corpus_by_id):
+            raise ValueError(
+                "corpus_document_count cannot be smaller than the test candidates"
+            )
+        for row in corpus_source_rows:
+            _add_context_documents(
+                row,
+                corpus_by_id=corpus_by_id,
+                source_questions=source_questions,
+                limit=corpus_document_count,
+            )
+            if len(corpus_by_id) >= corpus_document_count:
+                break
+        if len(corpus_by_id) != corpus_document_count:
+            raise ValueError(
+                f"Could only construct {len(corpus_by_id)} unique documents, "
+                f"expected {corpus_document_count}"
+            )
 
     corpus = []
     for document_id in sorted(corpus_by_id):
@@ -217,7 +226,16 @@ def build_demo(source: Path, output: Path, *, seed: int) -> dict[str, Any]:
     """执行读取、分层采样、语料构建和文件写入的完整流程。"""
     rows = load_validation_rows(source)
     selected = select_demo_rows(rows, seed=seed)
-    corpus, tests = build_records(selected)
+    selected_ids = {str(row["id"]) for row in selected}
+    corpus_source_rows = sorted(
+        (row for row in rows if str(row["id"]) not in selected_ids),
+        key=lambda row: _selection_key(str(row["id"]), seed),
+    )
+    corpus, tests = build_records(
+        selected,
+        corpus_source_rows=corpus_source_rows,
+        corpus_document_count=CORPUS_DOCUMENT_COUNT,
+    )
     return write_demo(
         source=source,
         output=output,
@@ -231,6 +249,44 @@ def _answer_kind(answer: str) -> str:
     """把标准答案划分为 yes、no 或普通 span。"""
     normalized = answer.strip().lower()
     return normalized if normalized in {"yes", "no"} else "span"
+
+
+def _add_context_documents(
+    row: Mapping[str, Any],
+    *,
+    corpus_by_id: dict[str, dict[str, Any]],
+    source_questions: dict[str, set[str]],
+    limit: int | None = None,
+) -> list[str]:
+    """把一条问题的 context 加入共享语料，并返回其完整候选文档 ID。"""
+    question_id = str(row["id"])
+    context = _required_mapping(row, "context")
+    titles = _required_sequence(context, "title")
+    sentence_groups = _required_sequence(context, "sentences")
+    if len(titles) != len(sentence_groups):
+        raise ValueError(f"Context lengths do not match for question {question_id}")
+
+    candidate_ids: list[str] = []
+    for title_value, sentence_values in zip(titles, sentence_groups, strict=True):
+        title = str(title_value)
+        candidate_ids.append(title)
+        sentences = [str(sentence).strip() for sentence in sentence_values]
+        existing = corpus_by_id.get(title)
+        if existing is not None:
+            if existing["sentences"] != sentences:
+                raise ValueError(f"Conflicting contexts found for title: {title}")
+            source_questions[title].add(question_id)
+            continue
+        if limit is not None and len(corpus_by_id) >= limit:
+            continue
+        corpus_by_id[title] = {
+            "id": title,
+            "title": title,
+            "text": " ".join(sentence for sentence in sentences if sentence),
+            "sentences": sentences,
+        }
+        source_questions[title].add(question_id)
+    return candidate_ids
 
 
 def _selection_key(question_id: str, seed: int) -> str:

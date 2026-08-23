@@ -12,6 +12,7 @@ build/
 *.egg-info/
 models/
 cache/
+experiments/**/cache/
 outputs/
 /framework/settings.yaml
 .idea/

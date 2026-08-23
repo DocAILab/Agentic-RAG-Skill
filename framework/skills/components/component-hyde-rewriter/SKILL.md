@@ -13,7 +13,7 @@ Input `RewriteRequest`:
 
 - `query`: original user query
 - optional `temperature`: generation temperature, default `0.0`
-- optional `max_tokens`: maximum hypothetical-document tokens, default `256`
+- optional `max_tokens`: maximum hypothetical-document tokens, default `8192`
 
 Output `RewriteResult`:
 

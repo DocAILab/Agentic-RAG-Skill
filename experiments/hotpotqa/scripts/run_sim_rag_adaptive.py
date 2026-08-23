@@ -64,7 +64,7 @@ def run_adaptive_experiment(
                 print(f"[{index}/{len(tests)}] {example['id']} FAILED", flush=True)
             continue
 
-        evaluations.append(evaluation)
+        evaluations.append(evaluation["metrics"])
         outputs.append(output)
         write_checkpoint(config, tests, outputs, evaluations, failures, "running")
         if verbose:
@@ -88,7 +88,6 @@ def _run_example(config, agentic_result, example, corpus, model, embedding_model
                 agentic_result=agentic_result,
                 model=model,
                 skill_root=config.skill_root,
-                max_tokens=request.get("selection_max_tokens", 4096),
             )
             stage = "compilation"
             command = _compile_selected(config, component_result, model, embedding_model)

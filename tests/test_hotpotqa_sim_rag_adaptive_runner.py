@@ -41,7 +41,6 @@ def _config(tmp_path, max_examples=1, example_max_attempts=1):
         request={
             "top_k": 3,
             "max_tokens": 256,
-            "selection_max_tokens": 4096,
             "critic_max_tokens": 4096,
             "max_iterations": 3,
             "example_max_attempts": example_max_attempts,
@@ -97,7 +96,7 @@ def test_adaptive_runner_selects_components_for_fixed_sim_rag(tmp_path) -> None:
                     "reason": "Exact entities favor lexical retrieval.",
                 }
             ),
-            "Washington State",
+            "The Los Angeles Dance Theater",
             _approval(),
         ]
     )
@@ -120,7 +119,7 @@ def test_adaptive_runner_selects_components_for_fixed_sim_rag(tmp_path) -> None:
     assert "# SIM-RAG-Inspired Iterative RAG" in selection_prompt
     assert "component-bm25-retriever" in selection_prompt
     assert len(model.calls) == 3
-    assert model.calls[0][3] == 4096
+    assert model.calls[0][3] == 8192
     assert json.loads(
         (tmp_path / "adaptive-result.json").read_text(encoding="utf-8")
     ) == report
@@ -130,10 +129,10 @@ def test_adaptive_runner_can_choose_different_retrievers_per_example(tmp_path) -
     model = ScriptedModel(
         [
             _selection("component-bm25-retriever"),
-            "Washington State",
+            "The Los Angeles Dance Theater",
             _approval(),
             _selection("component-vector-retriever"),
-            "John Alan Lasseter",
+            "133d Air Refueling Squadron",
             _approval(),
         ]
     )
@@ -195,7 +194,7 @@ def test_adaptive_runner_retries_transient_selection_failure(tmp_path) -> None:
         [
             "not json",
             _selection("component-bm25-retriever"),
-            "Washington State",
+            "The Los Angeles Dance Theater",
             _approval(),
         ]
     )
@@ -217,7 +216,7 @@ def test_adaptive_runner_retries_transient_execution_failure(tmp_path) -> None:
             _selection("component-bm25-retriever"),
             ModelAPIError("OpenAI-compatible response contains no text"),
             _selection("component-bm25-retriever"),
-            "Washington State",
+            "The Los Angeles Dance Theater",
             _approval(),
         ]
     )
@@ -239,7 +238,7 @@ def test_adaptive_config_enables_embeddings_without_component_constraints() -> N
     assert config.embedding is not None
     assert config.embedding.model == "BAAI/bge-large-en-v1.5"
     constraints = config.demo.request["constraints"]
-    assert config.demo.request["selection_max_tokens"] == 4096
+    assert "selection_max_tokens" not in config.demo.request
     assert config.demo.request["example_max_attempts"] == 3
     assert constraints["agentic_skill"] == "agentic-sim-rag"
     assert "retriever" not in constraints

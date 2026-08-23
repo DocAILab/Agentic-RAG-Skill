@@ -43,14 +43,17 @@ Copy-Item framework/settings.example.yaml framework/settings.yaml
 python -B run_demo.py
 ```
 
-入口从 `framework/settings.yaml` 读取 HotpotQA demo 路径、运行条数、请求参数、最终结果路径与中间日志路径，自动完成三级选择、检索、生成和 Hit@1、Hit@10、EM、F1 测评。
+入口从 `framework/settings.yaml` 读取 HotpotQA demo 路径、运行条数、请求参数、最终结果路径与中间日志路径，自动完成三级选择、检索、生成及检索/生成测评。检索侧输出 F1@1、Top-n F1（n 为该题 golden 文档数）、MRR、Hit@1、Hit@10、MAP、NDCG、DCG、IDCG；生成侧输出 ChrF、ChrF++、METEOR、R1、R2、RL、PPL、CER、WER，不使用生成 EM/F1。
 
-- 最终结果默认打印到命令行，并写入 `demo.output.result_path`。
+- 每题预测、单题指标和截至当前题的累计宏平均默认打印到命令行；完整结果写入 `demo.output.result_path`。
 - Manage、Agentic、Components、编译、执行和测评事件写入 `demo.output.log_path`。
+- `demo.select_skills_per_example: true` 为每题独立选择 Skill；设为 `false` 时整批问题只选择和编译一次并复用。
+- 批次选择只发送共享语料统计和均匀抽样的问题文本；`demo.batch_selection_query_sample_size` 控制抽样数，默认 20。
+- Vector Retriever 首次运行构建磁盘索引，后续运行直接从 `runtime.vector_index.cache_dir` 加载；缓存由语料、Embedding 配置和文本格式自动失效。
 - `python -B run_demo.py --limit 5` 可临时运行 5 条样本。
 - 安装后也可使用 `ragskill-demo`。
 
-默认 demo 包含 20 个 HotpotQA 问题和 200 篇共享文档。原始大型 Parquet 不提交到仓库，已派生的小型 `corpus.jsonl` 与 `test.jsonl` 会随仓库提供。
+默认 demo 包含 100 个 HotpotQA 问题和 2000 篇共享文档。原始大型 Parquet 不提交到仓库，已派生的 `corpus.jsonl` 与 `test.jsonl` 会随仓库提供。
 
 ## 测试
 
@@ -68,7 +71,7 @@ python -B -m ruff check --no-cache framework tests experiments/hotpotqa/scripts 
 |   |   |-- manage/             # 高层任务分析与 Agentic Skill 选择
 |   |   |-- agentic/            # RAG workflow 与抽象组件槽位
 |   |   `-- components/         # Retriever、Generator 等原子实现
-|   |-- evaluation/             # Hit@K、EM、F1
+|   |-- evaluation/             # XRAG 对齐的检索与生成指标
 |   |-- settings.example.yaml   # 可提交配置模板
 |   |-- selection.py            # 三级 LLM 选择
 |   |-- compiler.py             # workflow 与组件绑定

@@ -5,6 +5,7 @@ import math
 DEFAULT_QUERY_INSTRUCTION = (
     "Represent this sentence for searching relevant passages:"
 )
+TEXT_FORMAT_VERSION = "component-vector-retriever:title-text:v1"
 
 
 def run(inputs, context):
@@ -17,6 +18,27 @@ def run(inputs, context):
 
     instruction = str(inputs.get("query_instruction", DEFAULT_QUERY_INSTRUCTION)).strip()
     query_text = f"{instruction} {query}".strip()
+    index_search = getattr(context, "search_vector_index", None)
+    if callable(index_search) and all(
+        document.get("embedding") is None for document in documents
+    ):
+        ranked = index_search(
+            query_text=query_text,
+            document_ids=[
+                str(document.get("id", index))
+                for index, document in enumerate(documents)
+            ],
+            document_texts=[_document_text(document) for document in documents],
+            top_k=top_k,
+            text_format_version=TEXT_FORMAT_VERSION,
+        )
+        return {
+            "documents": [
+                dict(documents[index], score=float(score))
+                for index, score in ranked
+            ]
+        }
+
     missing = [
         index
         for index, document in enumerate(documents)

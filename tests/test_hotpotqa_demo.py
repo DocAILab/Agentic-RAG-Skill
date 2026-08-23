@@ -43,12 +43,12 @@ def test_hotpotqa_demo_has_expected_stratified_counts() -> None:
     tests = _load_jsonl(DEMO_ROOT / "test.jsonl")
     strata = Counter((record["type"], record["answer_type"]) for record in tests)
 
-    assert len(tests) == 20
+    assert len(tests) == 100
     assert strata == {
-        ("bridge", "span"): 10,
-        ("comparison", "span"): 6,
-        ("comparison", "yes"): 2,
-        ("comparison", "no"): 2,
+        ("bridge", "span"): 50,
+        ("comparison", "span"): 30,
+        ("comparison", "yes"): 10,
+        ("comparison", "no"): 10,
     }
     assert all(record["level"] == "hard" for record in tests)
 
@@ -60,7 +60,7 @@ def test_hotpotqa_demo_references_existing_corpus_and_sentences() -> None:
     }
     tests = _load_jsonl(DEMO_ROOT / "test.jsonl")
 
-    assert len(corpus) == 200
+    assert len(corpus) == 2000
     for example in tests:
         candidates = set(example["candidate_document_ids"])
         relevant = set(example["relevant_document_ids"])

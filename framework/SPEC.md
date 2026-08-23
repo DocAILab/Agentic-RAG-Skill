@@ -78,6 +78,14 @@ component_result = select_component_skills(
 
 `select_component_skills()` 只广告与 Agentic 槽位 capability、输入类型和输出类型一致的 Component `name + description`。模型输出还必须通过槽位集合、数量、唯一性和兼容性校验；之后才读取选中 Component 的正文。
 
+三级选择调用默认为推理模型预留最多 8192 个输出 token。Executor、Generator 与其他 LLM Component 的配置默认值同样不低于 8192；调用方显式传入合法 `max_tokens` 时保留该值，包括小于 8192 的值。
+
+HTTP 模型客户端默认对临时网络错误、408、429 和 5xx（包括 524）额外重试 2 次，并以 2 秒为初值执行指数退避。`executor.options.max_retries` 和 `executor.options.retry_backoff_seconds` 可覆盖这两个值；400 等确定性请求错误不会重试。`timeout_seconds` 只控制本地等待时间，不能延长第三方 API 网关自身的上游等待上限。
+
+Vector Retriever 的索引生命周期与 XRAG 对齐：首次遇到某套共享语料时构建归一化稠密向量矩阵，并在 `runtime.vector_index.cache_dir` 下持久化为 `manifest.json + vectors.npy`；后续问题复用内存索引，后续 Python 进程直接加载磁盘索引，每题只编码 query。缓存键由有序文档 ID 与正文、Embedding provider/model/base URL/options 和 `title+text` 格式版本共同计算；任一输入变化都会进入新目录，不会误用旧向量。`manifest.json` 不保存语料正文，索引临时文件通过原子替换发布，损坏或校验失败时自动重建。
+
+Vector Component 优先调用可选的 `context.search_vector_index()`，在 Claude Code 等只实现基础 `context.embed()` 的环境中仍可退回直接余弦检索。索引的 `builds`、`disk_loads`、`memory_hits`、最近来源与路径写入 `vector_index_cache`；每个 Component 的名称、槽位、状态和 `duration_seconds` 写入 `component_timings`，用于区分索引构建、检索、重排和生成延迟。
+
 端到端入口为：
 
 ```python
@@ -112,13 +120,13 @@ result = run_rag_from_config(
 
 ### Demo 入口
 
-`settings.yaml` 的 `demo` 段统一声明 `corpus_path`、`test_path`、`output.result_path`、`output.log_path`、`max_examples`、`candidate_documents_only` 和请求覆盖参数。用户不需要手工加载 JSONL 或拼接 framework API：
+`settings.yaml` 的 `demo` 段统一声明 `corpus_path`、`test_path`、`output.result_path`、`output.log_path`、`max_examples`、`candidate_documents_only`、`select_skills_per_example`、`batch_selection_query_sample_size` 和请求覆盖参数。用户不需要手工加载 JSONL 或拼接 framework API：
 
 ```powershell
 python -B run_demo.py
 ```
 
-`framework.demo.run_demo()` 只创建一次模型客户端，逐题执行三级选择、编译和 RAG，计算 Hit@1、Hit@10、EM、F1。最终答案、Skill 选择、检索 ID、trace、编译指令与宏平均写入 `output.result_path`，同时默认打印到命令行；Manage、Agentic、Components、执行和测评等中间事件以带 `run_id` 的 JSON Lines 追加到 `output.log_path`。安装项目后等价命令为 `ragskill-demo`；`--limit N` 可临时覆盖运行条数。
+`framework.demo.run_demo()` 只创建一次模型客户端。`select_skills_per_example: true` 时，每题独立执行三级选择和编译，用于 query-level adaptive RAG；设为 `false` 时，framework 根据请求参数、共享语料统计和均匀抽样的问题文本只选择并编译一次，所有问题复用同一命令。问题抽样数由 `batch_selection_query_sample_size` 控制，默认 20；框架同时发送总问题数与实际抽样数，不发送完整问题集。两种模式都会逐题执行检索、生成和 XRAG 对齐测评。终端在每题后打印单题指标与截至当前题的累计宏平均；最终答案、Skill 选择、检索 ID、trace、编译指令与整体宏平均写入 `output.result_path`。所有阶段事件以带 `run_id` 的 JSON Lines 追加到 `output.log_path`。安装项目后等价命令为 `ragskill-demo`；`--limit N` 可临时覆盖运行条数。
 
 ## 3. 可移植 Skill 包
 
@@ -321,7 +329,7 @@ V0 样例使用 JSON-compatible dictionary：
 - `RAGRequest`：`query`, `documents`, `top_k`, `max_tokens`, 可选 `rewrite_temperature`, 可选 `rewrite_max_tokens`
 - `RAGResult`：`answer`, `documents`, `trace`
 
-`RewriteRequest.query` 必须是非空原始查询。`temperature` 是可选的非负生成温度，默认值为 `0.0`；`max_tokens` 是可选的正整数生成长度上限，默认值为 `256`。`RewriteResult.rewritten_query` 必须是非空字符串，并且只包含一个假设答案式文档。
+`RewriteRequest.query` 必须是非空原始查询。`temperature` 是可选的非负生成温度，默认值为 `0.0`；`max_tokens` 是可选的正整数生成长度上限，默认值为 `8192`。`RewriteResult.rewritten_query` 必须是非空字符串，并且只包含一个假设答案式文档。
 
 V0 的 HyDE 接口固定为 single-sample HyDE（`N=1`）：每个查询只调用一次生成模型，不返回假设文档列表，也不在 Rewriter 中执行多样本向量平均。`rewritten_query` 只作为 Vector Retriever 的检索查询；原始 `query` 保留给 Reranker 和 Generator。
 
@@ -352,14 +360,28 @@ run_compiled_rag(
 
 ## 9. 测评
 
-首版测评模块位于 `framework/evaluation/`，明确区分检索质量与答案质量：
+测评模块位于 `framework/evaluation/`，实现与只读参考项目 XRAG 的 `src/xrag/eval/evaluate_rag.py` 对齐，并将同名风险隔离到 `retrieval`、`generation` 两组。
 
-- `Hit@1`、`Hit@10`：若前 K 个检索文档中至少出现一个相关文档标识符，则该样本得 1，否则得 0。
-- `EM`：预测答案与标准答案经过小写化、移除英文标点和冠词、合并空白后完全一致，则得 1。
-- `F1`：对归一化后的预测答案与标准答案计算词元级精确率和召回率的调和平均。
-- 一条样本存在多个标准答案别名时，`EM` 和 `F1` 分别取别名中的最高分；批量入口对各样本做宏平均。
+检索指标：
 
-这里的 `EM/F1` 是 HotpotQA 风格的**答案指标**。只读参考项目 XRAG 曾使用同名指标比较检索 ID 集合，新 framework 不沿用该混名。
+- `F1@1`：只取第一条检索结果，与全部标准相关 ID 按集合 TP、FP、FN 计算 F1。
+- `F1`：每题先令 `n` 为去重后的标准相关 ID 数量，只取 Top-n 检索结果计算集合 F1；批量结果对单题 F1 做宏平均。
+- `MRR`：第一个相关检索结果的排名倒数；未检索到相关文档时为 0。
+- `Hit@1`、`Hit@10`：前 1 或前 10 个结果中至少有一个相关 ID 时为 1，否则为 0。
+- `MAP`：原样保留 XRAG 的特殊公式：按标准相关 ID 的给定顺序遍历，累加 `(标准序号 + 1) / (首次检索名次 + 1)` 后除以标准相关 ID 数量。它不是常见的逐检索位置 Average Precision，因此 `relevant_ids` 必须是有序序列。
+- `DCG`：相关文档使用二值增益 1，并按 `1 / log2(rank + 1)` 折扣。
+- `IDCG`：原样保留 XRAG 规则，只把当前结果中已经检索到的相关项前移，不补入漏检相关项。
+- `NDCG`：`DCG / IDCG`，IDCG 为 0 时返回 0。
+
+生成指标：
+
+- `ChrF`、`ChrF++`：使用 SacreBLEU CHRF，默认字符 n-gram 阶数为 6、`beta=2`；ChrF++ 额外设置 `word_order=2`。两者均按 Jury/XRAG 将百分制分数除以 100。
+- `METEOR`：使用 NLTK METEOR；输入先按 Jury tokenizer 小写、移除 ASCII 标点并折叠空白。
+- `R1`、`R2`、`RL`：分别为 Google `rouge-score` 的 ROUGE-1、ROUGE-2、ROUGE-L F-measure，不启用词干化；多参考答案逐指标取最大值。
+- `PPL`：使用 `openai-community/gpt2` 和 Hugging Face Evaluate 相同的 BOS、交叉熵与指数计算；与 XRAG 一样，当 `int(PPL) > 1600` 时记为 0。framework 只改变工程实现，在进程内复用模型，不改变计算公式。
+- `CER`、`WER`：使用 JiWER 的字符错误率和词错误率；保留 Jury 默认行为，多参考答案取最大错误率。
+
+生成指标不包含 EM 或词元 F1。批量报告对每项单题指标做算术宏平均，JSON schema 2 的 `metrics` 与 `summary` 均使用 `retrieval`、`generation` 两级结构。首次运行 METEOR 可能下载 NLTK 数据，首次运行 PPL 会下载 GPT-2；可使用 `pip install -e ".[evaluation]"` 安装所需依赖。
 
 ```python
 from framework import evaluate_rag_result
@@ -367,9 +389,9 @@ from framework import evaluate_rag_result
 metrics = evaluate_rag_result(
     result,
     gold_answers=["Paris", "Paris, France"],
-    relevant_ids={"support-document-id"},
+    relevant_ids=["support-document-id"],
 )
 print(metrics.to_dict())
 ```
 
-`evaluate_example()` 接收显式 `EvaluationExample`，适合构造离线样本；`evaluate_batch()` 返回样本数和四项指标的宏平均；`evaluate_rag_result()` 可直接消费 `run_rag()` 的 `answer` 与有序 `documents`，默认从每个文档的 `id` 字段读取检索标识符。
+`evaluate_example()` 接收显式 `EvaluationExample`，适合构造离线样本；`evaluate_batch()` 返回样本数和全部指标的宏平均；`evaluate_rag_result()` 可直接消费 `run_rag()` 的 `answer` 与有序 `documents`，默认从每个文档的 `id` 字段读取检索标识符。`summarize_metrics()` 可聚合已经计算过的 `ExampleMetrics`，避免重复运行生成指标。

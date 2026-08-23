@@ -8,14 +8,15 @@ import re
 from datetime import UTC, datetime
 from pathlib import Path
 
+from experiments.hotpotqa.scripts.metrics import (
+    evaluate_hotpotqa,
+    summarize_hotpotqa,
+)
 from framework import (
-    EvaluationExample,
     RAGSelectionPlan,
     RuntimeComponentContext,
     compile_rag_command,
     create_clients_from_config,
-    evaluate_batch,
-    evaluate_example,
     load_framework_config,
 )
 
@@ -60,14 +61,13 @@ def run_experiment(config, *, model=None, embedding_model=None, verbose=True):
                 print(f"[{index}/{len(tests)}] {example['id']} FAILED", flush=True)
             continue
         retrieved_ids = [str(item["id"]) for item in result["documents"]]
-        evaluation = EvaluationExample(
-            prediction=result["answer"],
-            gold_answers=_answers(example),
-            retrieved_ids=retrieved_ids,
-            relevant_ids=example["relevant_document_ids"],
+        metrics = evaluate_hotpotqa(
+            result["answer"],
+            _answers(example),
+            retrieved_ids,
+            example["relevant_document_ids"],
         )
-        metrics = evaluate_example(evaluation).to_dict()
-        evaluations.append(evaluation)
+        evaluations.append(metrics)
         outputs.append(_success_record(example, result, retrieved_ids, metrics))
         _checkpoint(config, tests, outputs, evaluations, failures, "running")
         if verbose:
@@ -149,17 +149,7 @@ def _report(config, tests, outputs, evaluations, failures, status):
 
 
 def _summary(evaluations):
-    if evaluations:
-        return evaluate_batch(evaluations).to_dict()
-    return {
-        "count": 0,
-        "hit@1": 0.0,
-        "hit@10": 0.0,
-        "recall@10": 0.0,
-        "all_support@10": 0.0,
-        "em": 0.0,
-        "f1": 0.0,
-    }
+    return summarize_hotpotqa(evaluations)
 
 
 def _answers(example):

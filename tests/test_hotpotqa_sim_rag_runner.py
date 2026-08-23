@@ -39,7 +39,7 @@ def _config(tmp_path, max_examples):
 def test_fixed_runner_executes_without_model_based_skill_selection(tmp_path) -> None:
     model = ScriptedModel(
         [
-            "Washington State",
+            "The Los Angeles Dance Theater",
             json.dumps(
                 {
                     "approved": True,
@@ -73,7 +73,7 @@ def test_fixed_runner_records_failure_and_continues_next_example(tmp_path) -> No
     model = ScriptedModel(
         [
             ModelAPIError("temporary empty response"),
-            "John Alan Lasseter",
+            "133d Air Refueling Squadron",
             json.dumps(
                 {
                     "approved": True,
@@ -90,11 +90,11 @@ def test_fixed_runner_records_failure_and_continues_next_example(tmp_path) -> No
     assert report["experiment"]["successful_examples"] == 1
     assert report["experiment"]["failed_examples"] == 1
     assert [item["id"] for item in report["examples"]] == [
-        "5a76a0005542993569682c64"
+        "5a7268235542992359bc3081"
     ]
     assert report["failures"] == [
         {
-            "id": "5a73cf5e55429978a71e909f",
+            "id": "5a71214d5542994082a3e5b9",
             "error_type": "ModelAPIError",
             "error": "temporary empty response",
         }
