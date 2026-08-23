@@ -6,7 +6,14 @@ from collections.abc import Collection, Hashable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from .metrics import exact_match_score, f1_score, hit_at_1, hit_at_10
+from .metrics import (
+    all_support_at_k,
+    exact_match_score,
+    f1_score,
+    hit_at_1,
+    hit_at_10,
+    recall_at_k,
+)
 
 
 class EvaluationError(ValueError):
@@ -29,6 +36,8 @@ class ExampleMetrics:
 
     hit_at_1: float
     hit_at_10: float
+    recall_at_10: float
+    all_support_at_10: float
     em: float
     f1: float
 
@@ -37,6 +46,8 @@ class ExampleMetrics:
         return {
             "hit@1": self.hit_at_1,
             "hit@10": self.hit_at_10,
+            "recall@10": self.recall_at_10,
+            "all_support@10": self.all_support_at_10,
             "em": self.em,
             "f1": self.f1,
         }
@@ -49,6 +60,8 @@ class EvaluationSummary:
     count: int
     hit_at_1: float
     hit_at_10: float
+    recall_at_10: float
+    all_support_at_10: float
     em: float
     f1: float
 
@@ -58,6 +71,8 @@ class EvaluationSummary:
             "count": self.count,
             "hit@1": self.hit_at_1,
             "hit@10": self.hit_at_10,
+            "recall@10": self.recall_at_10,
+            "all_support@10": self.all_support_at_10,
             "em": self.em,
             "f1": self.f1,
         }
@@ -70,6 +85,12 @@ def evaluate_example(example: EvaluationExample) -> ExampleMetrics:
     return ExampleMetrics(
         hit_at_1=hit_at_1(example.retrieved_ids, example.relevant_ids),
         hit_at_10=hit_at_10(example.retrieved_ids, example.relevant_ids),
+        recall_at_10=recall_at_k(example.retrieved_ids, example.relevant_ids, 10),
+        all_support_at_10=all_support_at_k(
+            example.retrieved_ids,
+            example.relevant_ids,
+            10,
+        ),
         em=exact_match_score(example.prediction, example.gold_answers),
         f1=f1_score(example.prediction, example.gold_answers),
     )
@@ -86,6 +107,8 @@ def evaluate_batch(examples: Iterable[EvaluationExample]) -> EvaluationSummary:
         count=count,
         hit_at_1=sum(item.hit_at_1 for item in metrics) / count,
         hit_at_10=sum(item.hit_at_10 for item in metrics) / count,
+        recall_at_10=sum(item.recall_at_10 for item in metrics) / count,
+        all_support_at_10=sum(item.all_support_at_10 for item in metrics) / count,
         em=sum(item.em for item in metrics) / count,
         f1=sum(item.f1 for item in metrics) / count,
     )

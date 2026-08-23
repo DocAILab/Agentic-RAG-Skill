@@ -206,6 +206,48 @@ def test_run_compiled_rag_executes_rrfusion_with_two_retrievers() -> None:
     assert result["trace"][0]["branch_count"] == 2
 
 
+def test_run_compiled_rag_executes_sim_rag_with_real_components() -> None:
+    model = ScriptedExecutorModel(
+        [
+            "Apples grow in orchards.",
+            json.dumps(
+                {
+                    "approved": True,
+                    "score": 0.95,
+                    "feedback": "The answer is supported.",
+                    "issues": [],
+                }
+            ),
+        ]
+    )
+    context = RuntimeComponentContext(executor_model=model)
+
+    result = run_compiled_rag(
+        workflow="agentic-sim-rag",
+        bindings={
+            "rewriter": [],
+            "retriever": ["component-bm25-retriever"],
+            "reranker": [],
+            "generator": ["component-grounded-generator"],
+            "critic": ["component-critic"],
+        },
+        request={
+            "query": "Where do apple trees grow?",
+            "documents": DOCUMENTS,
+            "top_k": 1,
+            "max_iterations": 3,
+            "max_tokens": 64,
+        },
+        skill_root=SAMPLE_ROOT,
+        context=context,
+    )
+
+    assert result["answer"] == "Apples grow in orchards."
+    assert result["documents"][0]["id"] == "apple"
+    assert result["trace"][-1]["reason"] == "critic_approved"
+    assert len(model.calls) == 2
+
+
 def test_compile_rag_command_rejects_incompatible_component_binding() -> None:
     """验证编译器会再次拒绝跨 capability 的恶意或损坏绑定。"""
     plan = _vanilla_plan()

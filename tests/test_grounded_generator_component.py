@@ -49,20 +49,19 @@ def test_grounded_generator_formats_evidence_and_model_parameters() -> None:
     )
 
     assert result == {"answer": "Bananas are yellow."}
-    assert context.prompts == [
-        (
-            "Answer the question using only the supplied evidence. "
-            "If the evidence is insufficient, say so.\n\n"
-            "Question: What color are bananas?\n\n"
-            "Evidence:\n"
-            "[1] id=banana\n"
-            "Bananas are long yellow fruit.\n\n"
-            "[2] id=citrus\n"
-            "Lemons and oranges are citrus fruit.",
-            0.0,
-            32,
-        )
-    ]
+    expected_prompt = (
+        "Answer the question using only the supplied evidence. "
+        "Return only the shortest direct answer span, with no explanation. "
+        "If the evidence is insufficient, return exactly: "
+        "Insufficient evidence to answer reliably.\n\n"
+        "Question: What color are bananas?\n\n"
+        "Evidence:\n"
+        "[1] id=banana\n"
+        "Bananas are long yellow fruit.\n\n"
+        "[2] id=citrus\n"
+        "Lemons and oranges are citrus fruit."
+    )
+    assert context.prompts == [(expected_prompt, 0.0, 32)]
 
 
 def test_grounded_generator_marks_empty_evidence() -> None:

@@ -79,9 +79,13 @@ def test_run_demo_uses_configured_data_and_writes_report(tmp_path) -> None:
         "count": 1,
         "hit@1": 1.0,
         "hit@10": 1.0,
+        "recall@10": 1.0,
+        "all_support@10": 1.0,
         "em": 1.0,
         "f1": 1.0,
     }
+    assert report["schema_version"] == 2
+    assert report["examples"][0]["iteration_support"] == []
     assert report["examples"][0]["id"] == first_example["id"]
     assert report["examples"][0]["selection"]["agentic_skill"] == (
         "agentic-vanilla-rag"

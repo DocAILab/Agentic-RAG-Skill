@@ -256,6 +256,7 @@ def test_agentic_stage_advertises_then_loads_only_selected_skill() -> None:
     assert result.spec.package_name == "agentic-vanilla-rag"
     assert result.advertised_skills == (
         "agentic-rrfusion",
+        "agentic-sim-rag",
         "agentic-vanilla-rag",
     )
     assert "# Vanilla RAG Workflow" in result.instructions
@@ -265,6 +266,44 @@ def test_agentic_stage_advertises_then_loads_only_selected_skill() -> None:
     assert "Arrange parallel retrieval" in prompt
     assert "# Vanilla RAG Workflow" not in prompt
     assert "# RRFusion Workflow" not in prompt
+
+
+def test_agentic_stage_can_select_and_load_only_sim_rag() -> None:
+    model = ScriptedModel(
+        [
+            json.dumps(
+                {
+                    "selected_agentic_skill": "agentic-sim-rag",
+                    "reason": "The answer needs iterative sufficiency checks.",
+                }
+            )
+        ]
+    )
+    manage_result = ManageStageResult(
+        manage_skill="manage-rag-default",
+        guidance="Use bounded iterative retrieval.",
+        reason="Evidence may be incomplete.",
+    )
+
+    result = select_agentic_skill(
+        {"query": "A multi-hop question"},
+        manage_result=manage_result,
+        model=model,
+        skill_root=SAMPLE_ROOT,
+    )
+
+    assert result.spec.package_name == "agentic-sim-rag"
+    assert result.advertised_skills == (
+        "agentic-rrfusion",
+        "agentic-sim-rag",
+        "agentic-vanilla-rag",
+    )
+    assert "# SIM-RAG-Inspired Iterative RAG" in result.instructions
+    assert "# Vanilla RAG Workflow" not in result.instructions
+    assert "# RRFusion Workflow" not in result.instructions
+    prompt = model.calls[0][0]
+    assert "agentic-sim-rag" in prompt
+    assert "# SIM-RAG-Inspired Iterative RAG" not in prompt
 
 
 def test_component_stage_advertises_then_loads_only_selected_skills() -> None:

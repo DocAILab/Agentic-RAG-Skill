@@ -1,0 +1,46 @@
+schema_version: 1
+runtime_id: agentic.iterative.sim_rag
+kind: agentic
+version: 0.2.0
+mutable: false
+
+runtime:
+  type: python-workflow
+  path: scripts/workflow.py
+  callable: run
+
+slots:
+  rewriter:
+    capability: rewriter
+    input: RewriteRequest
+    output: RewriteResult
+    min: 0
+    max: 1
+
+  retriever:
+    capability: retriever
+    input: RetrievalRequest
+    output: RetrievalResult
+    min: 1
+    max: 1
+
+  reranker:
+    capability: reranker
+    input: RerankRequest
+    output: RerankResult
+    min: 0
+    max: 1
+
+  generator:
+    capability: generator
+    input: GenerationRequest
+    output: GenerationResult
+    min: 1
+    max: 1
+
+  critic:
+    capability: critic
+    input: CritiqueRequest
+    output: CritiqueResult
+    min: 1
+    max: 1

@@ -256,6 +256,10 @@ def run_demo(
                 "relevant_document_ids": relevant_ids,
                 "selection": selection,
                 "trace": result.get("trace", []),
+                "iteration_support": _iteration_support(
+                    result.get("trace", []),
+                    relevant_ids,
+                ),
                 "compiled_instruction": result.get("compiled_instruction"),
             }
         )
@@ -275,7 +279,7 @@ def run_demo(
 
     summary = evaluate_batch(evaluation_examples)
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "run_id": event_log.run_id,
         "created_at": datetime.now(UTC).isoformat(),
         "dataset": {
@@ -438,6 +442,30 @@ def _write_report(path: Path, report: Mapping[str, Any]) -> None:
 def _safe_error_message(error: Exception) -> str:
     """移除错误文本中可能出现的 OpenAI 风格密钥。"""
     return re.sub(r"sk-[A-Za-z0-9_-]{8,}", "[REDACTED]", str(error))
+
+
+def _iteration_support(trace: Any, relevant_ids: Sequence[str]) -> list[dict[str, Any]]:
+    """Summarize supporting-document coverage after every iterative round."""
+    if isinstance(trace, (str, bytes, bytearray)) or not isinstance(trace, Sequence):
+        return []
+    relevant = set(relevant_ids)
+    summaries = []
+    for event in trace:
+        if not isinstance(event, Mapping) or event.get("step") != "iteration":
+            continue
+        document_ids = set(event.get("document_ids", ()))
+        new_ids = set(event.get("new_document_ids", ()))
+        supporting = document_ids & relevant
+        summaries.append(
+            {
+                "iteration": event.get("iteration"),
+                "supporting_document_count": len(supporting),
+                "new_supporting_document_count": len(new_ids & relevant),
+                "support_recall": len(supporting) / len(relevant) if relevant else 0.0,
+                "all_support": float(bool(relevant) and relevant <= document_ids),
+            }
+        )
+    return summaries
 
 
 if __name__ == "__main__":

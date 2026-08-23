@@ -39,3 +39,17 @@ python -B run_demo.py
 ```powershell
 python -B run_demo.py --limit 5
 ```
+
+## Optimized SIM-RAG rerun
+
+The tracked configuration fixes the same 20-example candidate-document subset
+and requests `agentic-sim-rag` with BM25, the grounded Generator, and the
+Critic. It keeps answer generation at 256 tokens while giving the Critic an
+independent 4096-token budget:
+
+```powershell
+python -B run_demo.py --config experiments/hotpotqa/configs/sim_rag_optimized.example.yaml
+```
+
+Set `VVEAI_API_KEY` before running. The schema-v2 report includes Hit@1,
+Hit@10, Recall@10, All-Support@10, EM, F1, and per-iteration support gain.

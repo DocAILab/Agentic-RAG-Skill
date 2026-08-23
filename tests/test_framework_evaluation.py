@@ -78,6 +78,8 @@ def test_evaluate_example_and_batch_return_macro_averages() -> None:
     assert evaluate_example(positive).to_dict() == {
         "hit@1": 1.0,
         "hit@10": 1.0,
+        "recall@10": 1.0,
+        "all_support@10": 1.0,
         "em": 1.0,
         "f1": 1.0,
     }
@@ -85,9 +87,26 @@ def test_evaluate_example_and_batch_return_macro_averages() -> None:
         "count": 2,
         "hit@1": 0.5,
         "hit@10": 0.5,
+        "recall@10": 0.5,
+        "all_support@10": 0.5,
         "em": 0.5,
         "f1": 0.5,
     }
+
+
+def test_evaluate_example_distinguishes_hit_from_complete_support() -> None:
+    example = EvaluationExample(
+        prediction="Poet",
+        gold_answers="Poet",
+        retrieved_ids=("person-a", "noise"),
+        relevant_ids={"person-a", "person-b"},
+    )
+
+    metrics = evaluate_example(example).to_dict()
+
+    assert metrics["hit@10"] == 1.0
+    assert metrics["recall@10"] == 0.5
+    assert metrics["all_support@10"] == 0.0
 
 
 def test_evaluate_batch_rejects_empty_input() -> None:
@@ -113,6 +132,8 @@ def test_evaluate_rag_result_consumes_framework_output() -> None:
     assert metrics.to_dict() == {
         "hit@1": 0.0,
         "hit@10": 1.0,
+        "recall@10": 1.0,
+        "all_support@10": 1.0,
         "em": 1.0,
         "f1": 1.0,
     }
