@@ -208,6 +208,9 @@ Optimization contract:
   approved abstention and continues retrieval when another round is available.
 - Follow-up queries contain at most three bounded missing-evidence issues;
   bounded Critic feedback is used only when no issue is available.
+- A format-only rejection triggers one same-evidence answer regeneration and a
+  second Critic check. Mixed, ambiguous, or evidence-gap feedback continues
+  retrieval. This does not change the Component request or result schemas.
 - Each iteration trace includes `document_ids` and `new_document_ids`, allowing
   HotpotQA reports to expose per-round support gain.
 - Evaluation reports include `recall@10` and `all_support@10` in addition to

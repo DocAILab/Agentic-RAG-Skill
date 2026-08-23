@@ -157,3 +157,205 @@ def test_iteration_trace_exposes_document_ids_and_new_ids() -> None:
 
     assert result["trace"][0]["document_ids"] == ["support"]
     assert result["trace"][0]["new_document_ids"] == ["support"]
+
+
+def test_format_only_rejection_regenerates_without_more_retrieval() -> None:
+    document = {"id": "support", "text": "Mike Leach coaches Washington State."}
+    answers = iter(["Washington State Cougars football team", "Washington State"])
+    critiques = iter(
+        [
+            {
+                "approved": False,
+                "score": 0.8,
+                "feedback": "The evidence is sufficient, but the answer is too verbose.",
+                "issues": ["Return only the shortest direct answer span."],
+            },
+            {
+                "approved": True,
+                "score": 1.0,
+                "feedback": "The concise answer is supported.",
+                "issues": [],
+            },
+        ]
+    )
+    components = FakeComponents(
+        {
+            "retriever": [lambda inputs: {"documents": [document]}],
+            "generator": [lambda inputs: {"answer": next(answers)}],
+            "critic": [lambda inputs: next(critiques)],
+        }
+    )
+
+    result = _workflow()({"query": "Where does Mike Leach coach?"}, components)
+
+    assert result["answer"] == "Washington State"
+    assert [slot for slot, _ in components.calls] == [
+        "retriever",
+        "generator",
+        "critic",
+        "generator",
+        "critic",
+    ]
+    revision_call = components.calls[3][1]
+    assert revision_call["documents"] == [document]
+    assert revision_call["query"].startswith("Where does Mike Leach coach?")
+    assert "too verbose" in revision_call["query"]
+    assert result["trace"][1]["step"] == "regeneration"
+    assert result["trace"][1]["iteration"] == 1
+    assert result["trace"][1]["revised_answer"] == "Washington State"
+    assert result["trace"][-1]["reason"] == "critic_approved_after_regeneration"
+
+
+def test_mixed_answer_and_evidence_rejection_continues_retrieval() -> None:
+    first = {"id": "first", "text": "Partial support."}
+    second = {"id": "second", "text": "The missing second hop."}
+    retrievals = iter(
+        [{"documents": [first]}, {"documents": [first, second]}]
+    )
+    answers = iter(["An unnecessarily long candidate", "Paris"])
+    critiques = iter(
+        [
+            {
+                "approved": False,
+                "score": 0.4,
+                "feedback": (
+                    "The answer is too verbose and lacks the second supporting "
+                    "document."
+                ),
+                "issues": ["Retrieve the missing relation."],
+            },
+            {
+                "approved": True,
+                "score": 1.0,
+                "feedback": "Supported.",
+                "issues": [],
+            },
+        ]
+    )
+    components = FakeComponents(
+        {
+            "retriever": [lambda inputs: next(retrievals)],
+            "generator": [lambda inputs: {"answer": next(answers)}],
+            "critic": [lambda inputs: next(critiques)],
+        }
+    )
+
+    result = _workflow()({"query": "What is the answer?"}, components)
+
+    assert result["answer"] == "Paris"
+    assert [slot for slot, _ in components.calls] == [
+        "retriever",
+        "generator",
+        "critic",
+        "retriever",
+        "generator",
+        "critic",
+    ]
+    assert not any(event["step"] == "regeneration" for event in result["trace"])
+
+
+def test_rejected_regeneration_preserves_safe_stopping() -> None:
+    document = {"id": "support", "text": "Partial support."}
+    answers = iter(
+        ["An unnecessarily verbose candidate", "Insufficient evidence to answer reliably."]
+    )
+    critiques = iter(
+        [
+            {
+                "approved": False,
+                "score": 0.7,
+                "feedback": "The answer is too verbose.",
+                "issues": ["Use a concise answer span."],
+            },
+            {
+                "approved": True,
+                "score": 0.9,
+                "feedback": "The abstention is honest.",
+                "issues": [],
+            },
+        ]
+    )
+    components = FakeComponents(
+        {
+            "retriever": [lambda inputs: {"documents": [document]}],
+            "generator": [lambda inputs: {"answer": next(answers)}],
+            "critic": [lambda inputs: next(critiques)],
+        }
+    )
+
+    result = _workflow()(
+        {"query": "What is the answer?", "max_iterations": 1},
+        components,
+    )
+
+    assert result["answer"] == "Insufficient evidence to answer reliably."
+    assert result["trace"][1]["step"] == "regeneration"
+    assert result["trace"][1]["critic"]["approved"] is False
+    assert result["trace"][-1]["reason"] == "max_iterations"
+
+
+def test_approved_answer_form_feedback_does_not_trigger_regeneration() -> None:
+    document = {"id": "support", "text": "Paris is the capital of France."}
+    components = FakeComponents(
+        {
+            "retriever": [lambda inputs: {"documents": [document]}],
+            "generator": [lambda inputs: {"answer": "Paris"}],
+            "critic": [
+                lambda inputs: {
+                    "approved": True,
+                    "score": 1.0,
+                    "feedback": "The concise answer is direct and supported.",
+                    "issues": [],
+                }
+            ],
+        }
+    )
+
+    result = _workflow()({"query": "What is France's capital?"}, components)
+
+    assert result["answer"] == "Paris"
+    assert [slot for slot, _ in components.calls] == [
+        "retriever",
+        "generator",
+        "critic",
+    ]
+    assert result["trace"][-1]["reason"] == "critic_approved"
+
+
+def test_direct_but_incorrect_answer_continues_retrieval() -> None:
+    first = {"id": "first", "text": "Partial genre evidence."}
+    second = {"id": "second", "text": "Both artists played rock."}
+    retrievals = iter([{"documents": [first]}, {"documents": [first, second]}])
+    answers = iter(["Funk", "Rock"])
+    critiques = iter(
+        [
+            {
+                "approved": False,
+                "score": 0.2,
+                "feedback": (
+                    "The direct answer is factually incorrect and not grounded "
+                    "in the evidence."
+                ),
+                "issues": ["The evidence must verify the shared genre."],
+            },
+            {
+                "approved": True,
+                "score": 1.0,
+                "feedback": "Supported.",
+                "issues": [],
+            },
+        ]
+    )
+    components = FakeComponents(
+        {
+            "retriever": [lambda inputs: next(retrievals)],
+            "generator": [lambda inputs: {"answer": next(answers)}],
+            "critic": [lambda inputs: next(critiques)],
+        }
+    )
+
+    result = _workflow()({"query": "What shared genre did they play?"}, components)
+
+    assert result["answer"] == "Rock"
+    assert [slot for slot, _ in components.calls].count("retriever") == 2
+    assert not any(event["step"] == "regeneration" for event in result["trace"])

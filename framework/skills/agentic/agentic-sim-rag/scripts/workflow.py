@@ -14,6 +14,38 @@ ABSTENTION_MARKERS = (
     "cannot be determined",
     "not provided in the evidence",
 )
+EVIDENCE_GAP_MARKERS = (
+    "missing",
+    "lacks",
+    "insufficient evidence",
+    "evidence is insufficient",
+    "not enough evidence",
+    "no evidence",
+    "unsupported",
+    "not supported",
+    "incorrect",
+    "wrong",
+    "contradict",
+    "not grounded",
+    "cannot be verified",
+    "not verified",
+    "does not establish",
+    "do not establish",
+    "does not show",
+    "do not show",
+)
+ANSWER_FORM_MARKERS = (
+    "too verbose",
+    "too long",
+    "not direct",
+    "direct answer",
+    "format",
+    "wording",
+    "shortest",
+    "answer span",
+    "extra explanation",
+    "concise answer",
+)
 
 
 def run(request, components):
@@ -52,6 +84,27 @@ def run(request, components):
                 critique,
             )
         )
+        regeneration = _regenerate(
+            request,
+            components,
+            iteration,
+            query,
+            documents,
+            answer,
+            critique,
+        )
+        if regeneration:
+            answer, critique, event = regeneration
+            trace.append(event)
+            if critique["approved"]:
+                trace.append(
+                    {
+                        "step": "stop",
+                        "iteration": iteration,
+                        "reason": "critic_approved_after_regeneration",
+                    }
+                )
+                return {"answer": answer, "documents": documents, "trace": trace}
         reason = _stop_reason(critique, iteration, max_iterations, new_count)
         if reason:
             trace.append({"step": "stop", "iteration": iteration, "reason": reason})
@@ -150,6 +203,53 @@ def _critique(request, components, query, documents, answer):
     )
     _validate_critique(critique)
     return _reject_approved_abstention(critique, answer)
+
+
+def _regenerate(request, components, iteration, query, documents, answer, critique):
+    if not _should_regenerate(critique):
+        return None
+    guidance = _revision_guidance(critique)
+    revision_query = (
+        f"{query}\n\nAnswer revision: {guidance} "
+        "Use the same evidence and return only the shortest direct answer."
+    )
+    revised_answer = _generate(request, components, revision_query, documents)
+    revised_critique = _critique(
+        request,
+        components,
+        query,
+        documents,
+        revised_answer,
+    )
+    event = {
+        "step": "regeneration",
+        "iteration": iteration,
+        "original_answer": answer,
+        "revision_guidance": guidance,
+        "revised_answer": revised_answer,
+        "critic": dict(revised_critique),
+    }
+    return revised_answer, revised_critique, event
+
+
+def _should_regenerate(critique):
+    if critique["approved"]:
+        return False
+    critique_text = " ".join(
+        [str(critique.get("feedback", "")), *map(str, critique.get("issues", ()))]
+    ).lower()
+    has_evidence_gap = any(marker in critique_text for marker in EVIDENCE_GAP_MARKERS)
+    has_answer_form_issue = any(marker in critique_text for marker in ANSWER_FORM_MARKERS)
+    return has_answer_form_issue and not has_evidence_gap
+
+
+def _revision_guidance(critique):
+    parts = [
+        str(critique.get("feedback", "")).strip(),
+        *(str(issue).strip() for issue in critique.get("issues", ())),
+    ]
+    guidance = "; ".join(part for part in parts if part)
+    return _clip(guidance, 400)
 
 
 def _reject_approved_abstention(critique, answer):

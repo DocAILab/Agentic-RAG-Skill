@@ -17,6 +17,8 @@ Self-Practicing, Critic training, rationale generation, or experiments.
 - Treat rewritten queries as retrieval aids, never as evidence.
 - Return an answer only when the Critic approves a direct, non-abstaining answer.
 - Require evidence for every fact or reasoning hop needed by the answer.
+- Regenerate once with the same evidence when a rejection is clearly about
+  answer form only; ambiguous or evidence-related rejections continue retrieval.
 
 ## Component selection
 
@@ -46,6 +48,19 @@ Self-Practicing, Critic training, rationale generation, or experiments.
 Use at most three concrete missing-evidence issues from the Critic, bounded to
 160 characters each. Use bounded feedback only when no usable issue exists.
 The trace exposes accumulated and newly added document IDs for every round.
+
+## Answer regeneration
+
+Treat Critic feedback as answer-form-only when it clearly requests a shorter,
+more direct, or better-formatted answer and contains no missing-evidence signal.
+Regenerate once in that iteration using the original question, bounded Critic
+guidance, and the same accumulated evidence. Critique the revised answer again
+before returning it. Mixed or unrecognized rejection reasons must continue the
+normal retrieval loop.
+
+Record a `regeneration` trace event with the original answer, bounded guidance,
+revised answer, and revised Critic result. An approved revision stops with
+`critic_approved_after_regeneration`.
 
 ## Safe stopping
 

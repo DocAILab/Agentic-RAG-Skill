@@ -1,7 +1,7 @@
 schema_version: 1
 runtime_id: agentic.iterative.sim_rag
 kind: agentic
-version: 0.3.0
+version: 0.4.0
 mutable: false
 
 runtime:
