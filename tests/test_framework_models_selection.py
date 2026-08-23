@@ -403,6 +403,52 @@ def test_component_stage_rejects_hyde_with_bm25_retriever() -> None:
         )
 
 
+def test_sim_rag_component_stage_accepts_semantic_retrieval_stack() -> None:
+    specs = discover_specs(SAMPLE_ROOT, validate_runtime=False)
+    agentic = next(spec for spec in specs if spec.package_name == "agentic-sim-rag")
+    agentic_result = AgenticStageResult(
+        spec=agentic,
+        instructions=(agentic.package_path / "SKILL.md").read_text(encoding="utf-8"),
+        reason="Iterative evidence gathering is required.",
+        advertised_skills=("agentic-sim-rag",),
+    )
+    model = ScriptedModel(
+        [
+            json.dumps(
+                {
+                    "component_bindings": {
+                        "rewriter": ["component-hyde-rewriter"],
+                        "retriever": ["component-vector-retriever"],
+                        "reranker": ["component-bge-reranker"],
+                        "generator": ["component-grounded-generator"],
+                        "critic": ["component-critic"],
+                    },
+                    "reason": "Bridge a vocabulary gap and rerank multi-hop evidence.",
+                }
+            )
+        ]
+    )
+
+    result = select_component_skills(
+        {"query": "A paraphrased multi-hop question"},
+        agentic_result=agentic_result,
+        model=model,
+        skill_root=SAMPLE_ROOT,
+    )
+
+    assert result.bindings == {
+        "rewriter": ("component-hyde-rewriter",),
+        "retriever": ("component-vector-retriever",),
+        "reranker": ("component-bge-reranker",),
+        "generator": ("component-grounded-generator",),
+        "critic": ("component-critic",),
+    }
+    prompt = model.calls[0][0]
+    assert "Prefer BM25" in prompt
+    assert "Use HyDE only with Vector retrieval" in prompt
+    assert "Use BGE Reranker" in prompt
+
+
 def test_select_rag_plan_calls_model_with_strict_progressive_disclosure() -> None:
     """验证三级选择真实调用模型且每一阶段只披露允许的信息。"""
     model = ScriptedModel(
