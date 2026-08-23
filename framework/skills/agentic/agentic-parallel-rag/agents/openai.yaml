@@ -1,0 +1,4 @@
+interface:
+  display_name: "Parallel RAG Workflow"
+  short_description: "Arrange multi-branch parallel RAG with rank fusion"
+  default_prompt: "Use $agentic-parallel-rag to arrange multi-branch parallel RAG with optional rewriting and reranking."

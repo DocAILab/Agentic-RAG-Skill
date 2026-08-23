@@ -68,12 +68,12 @@ def _specs_by_name():
 
 
 def test_sample_repository_has_three_strict_skill_levels() -> None:
-    """验证样例仓库严格包含三层共十个 Skill。"""
+    """验证样例仓库严格包含三层共十一个 Skill。"""
     specs = tuple(discover_specs(SAMPLE_ROOT))
 
-    assert len(specs) == 10
+    assert len(specs) == 11
     assert sum(spec.kind is SkillKind.MANAGE for spec in specs) == 1
-    assert sum(spec.kind is SkillKind.AGENTIC for spec in specs) == 2
+    assert sum(spec.kind is SkillKind.AGENTIC for spec in specs) == 3
     assert sum(spec.kind is SkillKind.COMPONENT for spec in specs) == 7
 
 
