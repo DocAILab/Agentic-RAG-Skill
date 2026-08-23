@@ -20,13 +20,14 @@ def evaluate_result(example, result):
     )
 
 
-def success_record(example, result, evaluation, component_result):
+def success_record(example, result, evaluation, component_result, *, attempts=1):
     return {
         "id": example["id"],
         "type": example.get("type"),
         "question": example["question"],
         "gold_answers": _answers(example),
         "prediction": result["answer"],
+        "attempts": attempts,
         "selection": {
             "component_bindings": {
                 slot: list(names) for slot, names in component_result.bindings.items()
@@ -40,13 +41,14 @@ def success_record(example, result, evaluation, component_result):
     }
 
 
-def failure_record(example, stage, error):
+def failure_record(example, stage, error, attempts=1):
     message = re.sub(r"sk-[A-Za-z0-9_-]{8,}", "[REDACTED]", str(error))
     return {
         "id": example["id"],
         "stage": stage,
         "error_type": type(error).__name__,
         "error": message,
+        "attempts": attempts,
     }
 
 

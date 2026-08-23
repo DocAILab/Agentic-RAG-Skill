@@ -5,7 +5,7 @@ from pathlib import Path
 from experiments.hotpotqa.scripts.run_sim_rag_adaptive import (
     run_adaptive_experiment,
 )
-from framework import load_framework_config
+from framework import ModelAPIError, load_framework_config
 
 PROJECT_ROOT = Path(__file__).parents[1]
 CONFIG_PATH = (
@@ -25,10 +25,13 @@ class ScriptedModel:
 
     def generate(self, prompt, *, system=None, temperature=0.0, max_tokens=None):
         self.calls.append((prompt, system, temperature, max_tokens))
-        return next(self.responses)
+        response = next(self.responses)
+        if isinstance(response, Exception):
+            raise response
+        return response
 
 
-def _config(tmp_path, max_examples=1):
+def _config(tmp_path, max_examples=1, example_max_attempts=1):
     config = load_framework_config(CONFIG_PATH)
     demo = replace(
         config.demo,
@@ -38,8 +41,10 @@ def _config(tmp_path, max_examples=1):
         request={
             "top_k": 3,
             "max_tokens": 256,
+            "selection_max_tokens": 4096,
             "critic_max_tokens": 4096,
             "max_iterations": 3,
+            "example_max_attempts": example_max_attempts,
         },
     )
     return replace(config, demo=demo)
@@ -115,6 +120,7 @@ def test_adaptive_runner_selects_components_for_fixed_sim_rag(tmp_path) -> None:
     assert "# SIM-RAG-Inspired Iterative RAG" in selection_prompt
     assert "component-bm25-retriever" in selection_prompt
     assert len(model.calls) == 3
+    assert model.calls[0][3] == 4096
     assert json.loads(
         (tmp_path / "adaptive-result.json").read_text(encoding="utf-8")
     ) == report
@@ -184,12 +190,57 @@ def test_adaptive_runner_records_component_selection_failures(tmp_path) -> None:
     assert "component-vector-retriever" in report["failures"][0]["error"]
 
 
+def test_adaptive_runner_retries_transient_selection_failure(tmp_path) -> None:
+    model = ScriptedModel(
+        [
+            "not json",
+            _selection("component-bm25-retriever"),
+            "Washington State",
+            _approval(),
+        ]
+    )
+
+    report = run_adaptive_experiment(
+        _config(tmp_path, example_max_attempts=2),
+        model=model,
+        verbose=False,
+    )
+
+    assert report["experiment"]["successful_examples"] == 1
+    assert report["experiment"]["failed_examples"] == 0
+    assert report["examples"][0]["attempts"] == 2
+
+
+def test_adaptive_runner_retries_transient_execution_failure(tmp_path) -> None:
+    model = ScriptedModel(
+        [
+            _selection("component-bm25-retriever"),
+            ModelAPIError("OpenAI-compatible response contains no text"),
+            _selection("component-bm25-retriever"),
+            "Washington State",
+            _approval(),
+        ]
+    )
+
+    report = run_adaptive_experiment(
+        _config(tmp_path, example_max_attempts=2),
+        model=model,
+        verbose=False,
+    )
+
+    assert report["experiment"]["successful_examples"] == 1
+    assert report["experiment"]["failed_examples"] == 0
+    assert report["examples"][0]["attempts"] == 2
+
+
 def test_adaptive_config_enables_embeddings_without_component_constraints() -> None:
     config = load_framework_config(ADAPTIVE_CONFIG_PATH)
 
     assert config.embedding is not None
     assert config.embedding.model == "BAAI/bge-large-en-v1.5"
     constraints = config.demo.request["constraints"]
+    assert config.demo.request["selection_max_tokens"] == 4096
+    assert config.demo.request["example_max_attempts"] == 3
     assert constraints["agentic_skill"] == "agentic-sim-rag"
     assert "retriever" not in constraints
     assert "rewriter" not in constraints

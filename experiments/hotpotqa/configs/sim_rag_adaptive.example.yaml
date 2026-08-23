@@ -7,8 +7,10 @@ skills:
 runtime:
   request_defaults:
     top_k: 3
-    max_tokens: 256
+    max_tokens: 4096
+    selection_max_tokens: 4096
     critic_max_tokens: 4096
+    example_max_attempts: 3
     max_iterations: 3
 
 demo:
@@ -21,8 +23,10 @@ demo:
   candidate_documents_only: true
   request:
     top_k: 3
-    max_tokens: 256
+    max_tokens: 4096
+    selection_max_tokens: 4096
     critic_max_tokens: 4096
+    example_max_attempts: 3
     max_iterations: 3
     constraints:
       agentic_skill: agentic-sim-rag

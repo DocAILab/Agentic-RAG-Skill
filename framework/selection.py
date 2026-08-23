@@ -159,6 +159,7 @@ def select_component_skills(
     agentic_result: AgenticStageResult,
     model: ModelClient,
     skill_root: str | Path,
+    max_tokens: int = 512,
 ) -> ComponentStageResult:
     """第三步按 Agentic 槽位广告兼容组件，选择后再加载对应正文。"""
     specs = discover_specs(skill_root, validate_runtime=False)
@@ -198,6 +199,7 @@ def select_component_skills(
             '"reason":"..."}. Include every advertised slot; use [] for an '
             "unused optional slot."
         ),
+        max_tokens=max_tokens,
     )
     bindings = _validate_bindings(
         payload.get("component_bindings"),
@@ -302,13 +304,14 @@ def _call_json_model(
     *,
     system: str,
     prompt: str,
+    max_tokens: int = 512,
 ) -> Mapping[str, Any]:
     """调用统一模型接口，并将严格 JSON 输出解析为映射。"""
     response = model.generate(
         prompt,
         system=system,
         temperature=0.0,
-        max_tokens=512,
+        max_tokens=max_tokens,
     )
     text = response.strip()
     if text.startswith("```") and text.endswith("```"):

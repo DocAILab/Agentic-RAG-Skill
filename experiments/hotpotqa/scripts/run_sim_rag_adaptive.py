@@ -49,7 +49,38 @@ def run_adaptive_experiment(
     corpus = {item["id"]: item for item in _load_jsonl(demo.corpus_path)}
     outputs, evaluations, failures = [], [], []
     for index, example in enumerate(tests, start=1):
-        request = _request(config, example, corpus)
+        output, evaluation, failure = _run_example(
+            config,
+            agentic_result,
+            example,
+            corpus,
+            model,
+            embedding_model,
+        )
+        if failure is not None:
+            failures.append(failure)
+            write_checkpoint(config, tests, outputs, evaluations, failures, "running")
+            if verbose:
+                print(f"[{index}/{len(tests)}] {example['id']} FAILED", flush=True)
+            continue
+
+        evaluations.append(evaluation)
+        outputs.append(output)
+        write_checkpoint(config, tests, outputs, evaluations, failures, "running")
+        if verbose:
+            print(f"[{index}/{len(tests)}] {example['id']} OK", flush=True)
+
+    return write_checkpoint(config, tests, outputs, evaluations, failures, "completed")
+
+
+def _run_example(config, agentic_result, example, corpus, model, embedding_model):
+    request = _request(config, example, corpus)
+    max_attempts = request.get("example_max_attempts", 1)
+    if not isinstance(max_attempts, int) or max_attempts <= 0:
+        error = ValueError("example_max_attempts must be a positive integer")
+        return None, None, failure_record(example, "request", error, 1)
+
+    for attempt in range(1, max_attempts + 1):
         stage = "selection"
         try:
             component_result = select_component_skills(
@@ -57,32 +88,23 @@ def run_adaptive_experiment(
                 agentic_result=agentic_result,
                 model=model,
                 skill_root=config.skill_root,
+                max_tokens=request.get("selection_max_tokens", 4096),
             )
             stage = "compilation"
-            command = _compile_selected(
-                config,
-                component_result,
-                model,
-                embedding_model,
-            )
+            command = _compile_selected(config, component_result, model, embedding_model)
             stage = "execution"
             result = command.run(request)
             stage = "evaluation"
             evaluation = evaluate_result(example, result)
         except Exception as error:  # noqa: BLE001
-            failures.append(failure_record(example, stage, error))
-            write_checkpoint(config, tests, outputs, evaluations, failures, "running")
-            if verbose:
-                print(f"[{index}/{len(tests)}] {example['id']} FAILED", flush=True)
-            continue
-
-        evaluations.append(evaluation)
-        outputs.append(success_record(example, result, evaluation, component_result))
-        write_checkpoint(config, tests, outputs, evaluations, failures, "running")
-        if verbose:
-            print(f"[{index}/{len(tests)}] {example['id']} OK", flush=True)
-
-    return write_checkpoint(config, tests, outputs, evaluations, failures, "completed")
+            if attempt < max_attempts and stage in {"selection", "execution"}:
+                continue
+            return None, None, failure_record(example, stage, error, attempt)
+        output = success_record(
+            example, result, evaluation, component_result, attempts=attempt
+        )
+        return output, evaluation, None
+    raise AssertionError("unreachable")
 
 
 def _fixed_agentic_result(skill_root):
