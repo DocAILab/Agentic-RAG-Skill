@@ -48,8 +48,8 @@ Critic. It keeps answer generation at 256 tokens while giving the Critic an
 independent 4096-token budget:
 
 ```powershell
-python -B run_demo.py --config experiments/hotpotqa/configs/sim_rag_optimized.example.yaml
+python -B -m experiments.hotpotqa.scripts.run_sim_rag --config experiments/hotpotqa/configs/sim_rag_optimized.example.yaml
 ```
 
-Set `VVEAI_API_KEY` before running. The schema-v2 report includes Hit@1,
+Set `DEEPSEEK_API_KEY` before running. The schema-v2 report includes Hit@1,
 Hit@10, Recall@10, All-Support@10, EM, F1, and per-iteration support gain.

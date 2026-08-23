@@ -15,8 +15,8 @@ demo:
   corpus_path: ../data/demo/corpus.jsonl
   test_path: ../data/demo/test.jsonl
   output:
-    result_path: ../outputs/sim_rag_hotpotqa_20_optimized.json
-    log_path: ../outputs/sim_rag_hotpotqa_20_optimized.log.jsonl
+    result_path: ../outputs/sim_rag_hotpotqa_20_optimized_fixed.json
+    log_path: ../outputs/sim_rag_hotpotqa_20_optimized_fixed.log.jsonl
   max_examples: 20
   candidate_documents_only: true
   request:
@@ -36,9 +36,9 @@ demo:
 executor:
   provider: openai-compatible
   model: deepseek-v4-flash
-  base_url: https://api.vveai.com/v1
+  base_url: https://api.deepseek.com
   api_key: null
-  api_key_env: VVEAI_API_KEY
+  api_key_env: DEEPSEEK_API_KEY
   timeout_seconds: 120
   extra_headers: {}
   options: {}
