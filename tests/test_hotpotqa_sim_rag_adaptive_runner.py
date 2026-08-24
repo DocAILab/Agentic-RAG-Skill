@@ -109,7 +109,7 @@ def test_adaptive_runner_selects_components_for_fixed_sim_rag(tmp_path) -> None:
 
     assert report["status"] == "completed"
     assert report["experiment"]["selection_mode"] == "adaptive-components"
-    assert report["experiment"]["agentic_skill"] == "agentic-sim-rag"
+    assert report["experiment"]["agentic_skill"] == "agentic-iterative-rag"
     assert report["examples"][0]["selection"] == {
         "component_bindings": bindings,
         "reason": "Exact entities favor lexical retrieval.",
@@ -240,7 +240,7 @@ def test_adaptive_config_enables_embeddings_without_component_constraints() -> N
     constraints = config.demo.request["constraints"]
     assert "selection_max_tokens" not in config.demo.request
     assert config.demo.request["example_max_attempts"] == 3
-    assert constraints["agentic_skill"] == "agentic-sim-rag"
+    assert constraints["agentic_skill"] == "agentic-iterative-rag"
     assert "retriever" not in constraints
     assert "rewriter" not in constraints
     assert "reranker" not in constraints

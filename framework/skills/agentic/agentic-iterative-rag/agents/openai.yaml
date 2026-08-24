@@ -1,4 +1,4 @@
 interface:
   display_name: "SIM-RAG Iterative Workflow"
   short_description: "Iterate until complete multi-hop evidence is sufficient"
-  default_prompt: "Use $agentic-sim-rag to run bounded Critic-guided retrieval."
+  default_prompt: "Use $agentic-iterative-rag to run bounded Critic-guided retrieval."

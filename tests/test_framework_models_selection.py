@@ -405,9 +405,9 @@ def test_agentic_stage_advertises_then_loads_only_selected_skill() -> None:
 
     assert result.spec.package_name == "agentic-vanilla-rag"
     assert result.advertised_skills == (
+        "agentic-iterative-rag",
         "agentic-parallel-rag",
         "agentic-rrfusion",
-        "agentic-sim-rag",
         "agentic-vanilla-rag",
     )
     assert "# Vanilla RAG Workflow" in result.instructions
@@ -424,7 +424,7 @@ def test_agentic_stage_can_select_and_load_only_sim_rag() -> None:
         [
             json.dumps(
                 {
-                    "selected_agentic_skill": "agentic-sim-rag",
+                    "selected_agentic_skill": "agentic-iterative-rag",
                     "reason": "The answer needs iterative sufficiency checks.",
                 }
             )
@@ -443,17 +443,18 @@ def test_agentic_stage_can_select_and_load_only_sim_rag() -> None:
         skill_root=SAMPLE_ROOT,
     )
 
-    assert result.spec.package_name == "agentic-sim-rag"
+    assert result.spec.package_name == "agentic-iterative-rag"
     assert result.advertised_skills == (
+        "agentic-iterative-rag",
+        "agentic-parallel-rag",
         "agentic-rrfusion",
-        "agentic-sim-rag",
         "agentic-vanilla-rag",
     )
     assert "# SIM-RAG-Inspired Iterative RAG" in result.instructions
     assert "# Vanilla RAG Workflow" not in result.instructions
     assert "# RRFusion Workflow" not in result.instructions
     prompt = model.calls[0][0]
-    assert "agentic-sim-rag" in prompt
+    assert "agentic-iterative-rag" in prompt
     assert "# SIM-RAG-Inspired Iterative RAG" not in prompt
 
 
@@ -556,12 +557,12 @@ def test_component_stage_rejects_hyde_with_bm25_retriever() -> None:
 
 def test_sim_rag_component_stage_accepts_semantic_retrieval_stack() -> None:
     specs = discover_specs(SAMPLE_ROOT, validate_runtime=False)
-    agentic = next(spec for spec in specs if spec.package_name == "agentic-sim-rag")
+    agentic = next(spec for spec in specs if spec.package_name == "agentic-iterative-rag")
     agentic_result = AgenticStageResult(
         spec=agentic,
         instructions=(agentic.package_path / "SKILL.md").read_text(encoding="utf-8"),
         reason="Iterative evidence gathering is required.",
-        advertised_skills=("agentic-sim-rag",),
+        advertised_skills=("agentic-iterative-rag",),
     )
     model = ScriptedModel(
         [
