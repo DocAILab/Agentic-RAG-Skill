@@ -68,7 +68,7 @@ def _specs_by_name():
 
 
 def test_sample_repository_has_three_strict_skill_levels() -> None:
-    """验证样例仓库严格包含三层共十个 Skill。"""
+    """验证样例仓库严格包含三层共十一个 Skill。"""
     specs = tuple(discover_specs(SAMPLE_ROOT))
 
     packages_by_kind = {

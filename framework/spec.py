@@ -437,7 +437,11 @@ def binding_requirement_errors(
     bindings: Mapping[str, Sequence[str]],
     components: Mapping[str, RAGSkillSpec],
 ) -> tuple[str, ...]:
-    """返回所选 Component 跨 capability 依赖中未满足的错误。"""
+    """返回所选 Component 跨 capability 依赖中未满足的错误。
+
+    依赖语义为“至少一个提供该能力的绑定组件位于允许列表内”，
+    允许多分支技能（如 parallel）在绑定 HyDE 的同时保留非允许组件。
+    """
     selected_by_capability: dict[str, set[str]] = {}
     selected_names = set()
     for slot in agentic.slots:
@@ -453,7 +457,7 @@ def binding_requirement_errors(
         for requirement in component.requires:
             selected = selected_by_capability.get(requirement.capability, set())
             allowed = set(requirement.components)
-            if not selected or not selected.issubset(allowed):
+            if not selected or not (selected & allowed):
                 errors.append(
                     f"Component '{selected_name}' requires capability "
                     f"'{requirement.capability}' to use one of "
