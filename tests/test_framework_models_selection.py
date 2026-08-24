@@ -405,6 +405,7 @@ def test_agentic_stage_advertises_then_loads_only_selected_skill() -> None:
 
     assert result.spec.package_name == "agentic-vanilla-rag"
     assert result.advertised_skills == (
+        "agentic-parallel-rag",
         "agentic-rrfusion",
         "agentic-vanilla-rag",
     )
