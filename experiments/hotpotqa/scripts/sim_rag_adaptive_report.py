@@ -70,7 +70,7 @@ def build_report(tests, outputs, evaluations, failures, status):
         "experiment": {
             "dataset": "HotpotQA distractor demo",
             "selection_mode": "adaptive-components",
-            "agentic_skill": "agentic-sim-rag",
+            "agentic_skill": "agentic-iterative-rag",
             "examples": len(tests),
             "successful_examples": len(outputs),
             "failed_examples": len(failures),

@@ -25,7 +25,7 @@ from framework import (
     select_component_skills,
 )
 
-AGENTIC_SKILL = "agentic-sim-rag"
+AGENTIC_SKILL = "agentic-iterative-rag"
 
 
 def run_adaptive_experiment(

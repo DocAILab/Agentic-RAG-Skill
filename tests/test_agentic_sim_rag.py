@@ -20,13 +20,13 @@ class FakeComponents:
 
 def _workflow():
     specs = {spec.package_name: spec for spec in discover_specs(SKILLS_ROOT)}
-    return load_runtime_callable(specs["agentic-sim-rag"])
+    return load_runtime_callable(specs["agentic-iterative-rag"])
 
 
 def test_sim_rag_manifest_declares_iterative_component_slots() -> None:
     specs = {spec.package_name: spec for spec in discover_specs(SKILLS_ROOT)}
 
-    spec = specs["agentic-sim-rag"]
+    spec = specs["agentic-iterative-rag"]
     slots = {slot.name: slot for slot in spec.slots}
 
     assert spec.kind is SkillKind.AGENTIC

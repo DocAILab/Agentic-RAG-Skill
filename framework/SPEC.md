@@ -224,7 +224,7 @@ Optimization contract:
 - Evaluation reports include `recall@10` and `all_support@10` in addition to
   Hit@1, Hit@10, EM, and F1.
 
-`agentic-sim-rag`（运行时 ID：`agentic.iterative.sim_rag`）是受 SIM-RAG
+`agentic-iterative-rag`（运行时 ID：`agentic.iterative.sim_rag`）是受 SIM-RAG
 推理架构启发的有界迭代工作流，不包含 Self-Practicing、Critic 训练、rationale
 生成或论文实验复现。
 

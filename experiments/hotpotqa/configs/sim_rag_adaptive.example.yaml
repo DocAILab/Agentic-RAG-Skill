@@ -27,7 +27,7 @@ demo:
     example_max_attempts: 3
     max_iterations: 3
     constraints:
-      agentic_skill: agentic-sim-rag
+      agentic_skill: agentic-iterative-rag
       purpose: Select compatible Components per HotpotQA question
 
 executor:

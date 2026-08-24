@@ -90,7 +90,7 @@ def test_optimized_sim_rag_config_is_ready_for_controlled_rerun() -> None:
     assert config.demo.request["max_iterations"] == 3
     assert config.demo.request["max_tokens"] == 256
     assert config.demo.request["critic_max_tokens"] == 4096
-    assert config.demo.request["constraints"]["agentic_skill"] == "agentic-sim-rag"
+    assert config.demo.request["constraints"]["agentic_skill"] == "agentic-iterative-rag"
     assert config.embedding is None
     assert config.executor.base_url == "https://api.deepseek.com"
     assert config.executor.api_key_env == "DEEPSEEK_API_KEY"

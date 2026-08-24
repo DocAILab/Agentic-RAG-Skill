@@ -47,7 +47,7 @@ python -B run_demo.py --limit 5
 ## Optimized SIM-RAG rerun
 
 The tracked configuration fixes the same 20-example candidate-document subset
-and requests `agentic-sim-rag` with BM25, the grounded Generator, and the
+and requests `agentic-iterative-rag` with BM25, the grounded Generator, and the
 Critic. It keeps answer generation at 256 tokens while giving the Critic an
 independent 4096-token budget:
 
@@ -60,7 +60,7 @@ Hit@10, Recall@10, All-Support@10, EM, F1, and per-iteration support gain.
 
 ## Adaptive SIM-RAG Component selection
 
-This runner fixes `agentic-sim-rag` but asks the Executor Model to select its
+This runner fixes `agentic-iterative-rag` but asks the Executor Model to select its
 compatible Components independently for every question. It records the selected
 bindings, selection reason, aggregate selection counts, execution trace, and
 metrics in a schema-v3 report:

@@ -82,7 +82,7 @@ def _compile_command(config, model, embedding_model):
         manage_skill=config.manage_skill,
         manage_guidance="Fixed HotpotQA experiment plan.",
         manage_reason="Selection is outside the experimental variable.",
-        agentic_skill="agentic-sim-rag",
+        agentic_skill="agentic-iterative-rag",
         agentic_reason="Controlled iterative workflow.",
         component_bindings=FIXED_BINDINGS,
         component_reason="Fixed BM25, grounded Generator, and Critic.",

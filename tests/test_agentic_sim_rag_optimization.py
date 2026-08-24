@@ -22,7 +22,7 @@ class FakeComponents:
 
 def _workflow():
     specs = {spec.package_name: spec for spec in discover_specs(SKILLS_ROOT)}
-    return load_runtime_callable(specs["agentic-sim-rag"])
+    return load_runtime_callable(specs["agentic-iterative-rag"])
 
 
 def test_approved_abstention_continues_until_direct_answer() -> None:

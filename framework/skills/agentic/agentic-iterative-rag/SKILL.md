@@ -1,5 +1,5 @@
 ---
-name: agentic-sim-rag
+name: agentic-iterative-rag
 description: Use when a RAG request needs bounded multi-round evidence gathering with Critic-based sufficiency checks before returning an answer.
 ---
 
