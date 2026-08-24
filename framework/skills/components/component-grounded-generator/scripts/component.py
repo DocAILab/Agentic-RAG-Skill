@@ -11,7 +11,9 @@ def run(inputs, context):
     evidence = _format_evidence(documents)
     prompt = (
         "Answer the question using only the supplied evidence. "
-        "If the evidence is insufficient, say so.\n\n"
+        "Return only the shortest direct answer span, with no explanation. "
+        "If the evidence is insufficient, return exactly: "
+        "Insufficient evidence to answer reliably.\n\n"
         f"Question: {query}\n\nEvidence:\n{evidence}"
     )
     answer = context.call_model(
@@ -30,7 +32,7 @@ def _normalize_documents(documents):
     if documents is None:
         return []
     if isinstance(documents, (str, bytes, bytearray)):
-        raise ValueError("documents must be a sequence of mappings")
+        raise ValueError("documents must be a sequence of mappings")  # noqa: TRY004
     normalized = []
     for index, document in enumerate(documents):
         try:

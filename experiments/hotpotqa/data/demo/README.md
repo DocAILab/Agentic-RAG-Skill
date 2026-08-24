@@ -43,3 +43,33 @@ python -B run_demo.py
 ```powershell
 python -B run_demo.py --limit 5
 ```
+
+## Optimized SIM-RAG rerun
+
+The tracked configuration fixes the same 20-example candidate-document subset
+and requests `agentic-sim-rag` with BM25, the grounded Generator, and the
+Critic. It keeps answer generation at 256 tokens while giving the Critic an
+independent 4096-token budget:
+
+```powershell
+python -B -m experiments.hotpotqa.scripts.run_sim_rag --config experiments/hotpotqa/configs/sim_rag_optimized.example.yaml
+```
+
+Set `DEEPSEEK_API_KEY` before running. The schema-v2 report includes Hit@1,
+Hit@10, Recall@10, All-Support@10, EM, F1, and per-iteration support gain.
+
+## Adaptive SIM-RAG Component selection
+
+This runner fixes `agentic-sim-rag` but asks the Executor Model to select its
+compatible Components independently for every question. It records the selected
+bindings, selection reason, aggregate selection counts, execution trace, and
+metrics in a schema-v3 report:
+
+```powershell
+python -B -m experiments.hotpotqa.scripts.run_sim_rag_adaptive --config experiments/hotpotqa/configs/sim_rag_adaptive.example.yaml
+```
+
+Before a real run, install the optional local model dependency with
+`pip install -e ".[embedding,rerank]"`. The first Vector or BGE selection may
+download its configured model weights. The fixed-BM25 runner remains the control
+baseline for comparing adaptive selection.

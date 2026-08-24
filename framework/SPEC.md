@@ -205,6 +205,50 @@ slots:
     max: 1
 ```
 
+### SIM-RAG-inspired Iterative Agentic
+
+Optimization contract:
+
+- `max_tokens` controls Generator output only. Optional `critic_max_tokens`
+  controls Critic output independently, defaults to `4096`, and must be a
+  positive integer.
+- An abstention is never sufficient: the workflow overrides an accidentally
+  approved abstention and continues retrieval when another round is available.
+- Follow-up queries contain at most three bounded missing-evidence issues;
+  bounded Critic feedback is used only when no issue is available.
+- A format-only rejection triggers one same-evidence answer regeneration and a
+  second Critic check. Mixed, ambiguous, or evidence-gap feedback continues
+  retrieval. This does not change the Component request or result schemas.
+- Each iteration trace includes `document_ids` and `new_document_ids`, allowing
+  HotpotQA reports to expose per-round support gain.
+- Evaluation reports include `recall@10` and `all_support@10` in addition to
+  Hit@1, Hit@10, EM, and F1.
+
+`agentic-sim-rag`（运行时 ID：`agentic.iterative.sim_rag`）是受 SIM-RAG
+推理架构启发的有界迭代工作流，不包含 Self-Practicing、Critic 训练、rationale
+生成或论文实验复现。
+
+它在标准 `RAGRequest` 上增加可选字段 `max_iterations`，默认值为 `3`。
+`query` 必须是非空字符串，`top_k` 和 `max_iterations` 必须是正整数。
+Critic 使用以下标准数据包：
+
+- `CritiqueRequest`：`query`、`documents`、`answer`，以及可选 `max_tokens`
+- `CritiqueResult`：`approved`、`score`、`feedback`、`issues`
+
+每轮 Retriever 的召回深度为 `top_k × iteration`。首轮检索原问题；后续轮将
+Critic 的 `feedback` 和 `issues` 组合为 follow-up query。可选 Rewriter 只改写
+当前检索查询，不产生证据。证据按文档 `id` 去重并保留首次出现顺序；可选
+Reranker、Generator 和 Critic 始终使用原始问题与累计证据。
+
+只有 `CritiqueResult.approved=true` 时才返回候选答案。Critic 拒绝且达到最大
+轮数，或该轮没有新增证据时，工作流返回
+`Insufficient evidence to answer reliably.`。
+
+`RAGResult.trace` 为每轮写入一个 `iteration` 事件，包含轮次、原始/检索查询、
+召回深度、文档数、新增文档数、候选答案和完整 Critic 结果。最后写入一个
+`stop` 事件，`reason` 只能是 `critic_approved`、`max_iterations` 或
+`no_new_evidence`。
+
 统一入口：
 
 ```python

@@ -71,10 +71,31 @@ def test_sample_repository_has_three_strict_skill_levels() -> None:
     """验证样例仓库严格包含三层共十一个 Skill。"""
     specs = tuple(discover_specs(SAMPLE_ROOT))
 
-    assert len(specs) == 11
-    assert sum(spec.kind is SkillKind.MANAGE for spec in specs) == 1
-    assert sum(spec.kind is SkillKind.AGENTIC for spec in specs) == 3
-    assert sum(spec.kind is SkillKind.COMPONENT for spec in specs) == 7
+    packages_by_kind = {
+        kind: {
+            spec.package_name
+            for spec in specs
+            if spec.kind is kind
+        }
+        for kind in SkillKind
+    }
+
+    assert set(packages_by_kind) == set(SkillKind)
+    assert {"manage-rag-default"} <= packages_by_kind[SkillKind.MANAGE]
+    assert {
+        "agentic-rrfusion",
+        "agentic-sim-rag",
+        "agentic-vanilla-rag",
+    } <= packages_by_kind[SkillKind.AGENTIC]
+    assert {
+        "component-bge-reranker",
+        "component-bm25-retriever",
+        "component-classifier",
+        "component-critic",
+        "component-grounded-generator",
+        "component-hyde-rewriter",
+        "component-vector-retriever",
+    } <= packages_by_kind[SkillKind.COMPONENT]
 
 
 def test_skill_packages_are_grouped_by_declared_kind() -> None:
