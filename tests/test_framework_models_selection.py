@@ -405,6 +405,7 @@ def test_agentic_stage_advertises_then_loads_only_selected_skill() -> None:
 
     assert result.spec.package_name == "agentic-vanilla-rag"
     assert result.advertised_skills == (
+        "agentic-conditional-rag",
         "agentic-iterative-rag",
         "agentic-parallel-rag",
         "agentic-rrfusion",
@@ -413,8 +414,10 @@ def test_agentic_stage_advertises_then_loads_only_selected_skill() -> None:
     assert "# Vanilla RAG Workflow" in result.instructions
     prompt = model.calls[0][0]
     assert "Prefer a single retrieval route." in prompt
+    assert "Route each RAG request at runtime" in prompt
     assert "Arrange a sequential RAG workflow" in prompt
     assert "Arrange parallel retrieval" in prompt
+    assert "# Conditional RAG Agentic Skill" not in prompt
     assert "# Vanilla RAG Workflow" not in prompt
     assert "# RRFusion Workflow" not in prompt
 
@@ -445,6 +448,7 @@ def test_agentic_stage_can_select_and_load_only_sim_rag() -> None:
 
     assert result.spec.package_name == "agentic-iterative-rag"
     assert result.advertised_skills == (
+        "agentic-conditional-rag",
         "agentic-iterative-rag",
         "agentic-parallel-rag",
         "agentic-rrfusion",
@@ -555,12 +559,86 @@ def test_component_stage_rejects_hyde_with_bm25_retriever() -> None:
         )
 
 
-def test_sim_rag_component_stage_accepts_semantic_retrieval_stack() -> None:
+def test_component_stage_accepts_conditional_hybrid_bindings() -> None:
+    """验证 Conditional 选择阶段接受 HyDE、BM25 和 Vector 组合。"""
     specs = discover_specs(SAMPLE_ROOT, validate_runtime=False)
-    agentic = next(spec for spec in specs if spec.package_name == "agentic-iterative-rag")
+    agentic = next(
+        spec
+        for spec in specs
+        if spec.package_name == "agentic-conditional-rag"
+    )
     agentic_result = AgenticStageResult(
         spec=agentic,
-        instructions=(agentic.package_path / "SKILL.md").read_text(encoding="utf-8"),
+        instructions=(agentic.package_path / "SKILL.md").read_text(
+            encoding="utf-8"
+        ),
+        reason="Choose a retrieval route at runtime.",
+        advertised_skills=(
+            "agentic-conditional-rag",
+            "agentic-iterative-rag",
+            "agentic-parallel-rag",
+            "agentic-rrfusion",
+            "agentic-vanilla-rag",
+        ),
+    )
+    model = ScriptedModel(
+        [
+            json.dumps(
+                {
+                    "component_bindings": {
+                        "classifier": ["component-classifier"],
+                        "rewriter": ["component-hyde-rewriter"],
+                        "lexical_retriever": [
+                            "component-bm25-retriever"
+                        ],
+                        "semantic_retriever": [
+                            "component-vector-retriever"
+                        ],
+                        "reranker": [],
+                        "generator": [
+                            "component-grounded-generator"
+                        ],
+                    },
+                    "reason": "Route between lexical and semantic retrieval.",
+                }
+            )
+        ]
+    )
+
+    result = select_component_skills(
+        {"query": "Where do apple trees grow?"},
+        agentic_result=agentic_result,
+        model=model,
+        skill_root=SAMPLE_ROOT,
+    )
+
+    assert result.bindings == {
+        "classifier": ("component-classifier",),
+        "rewriter": ("component-hyde-rewriter",),
+        "lexical_retriever": ("component-bm25-retriever",),
+        "semantic_retriever": ("component-vector-retriever",),
+        "reranker": (),
+        "generator": ("component-grounded-generator",),
+    }
+    prompt = model.calls[0][0]
+    assert "component-classifier" in prompt
+    assert "component-hyde-rewriter" in prompt
+    assert "component-bm25-retriever" in prompt
+    assert "component-vector-retriever" in prompt
+
+
+def test_sim_rag_component_stage_accepts_semantic_retrieval_stack() -> None:
+    specs = discover_specs(SAMPLE_ROOT, validate_runtime=False)
+    agentic = next(
+        spec
+        for spec in specs
+        if spec.package_name == "agentic-iterative-rag"
+    )
+    agentic_result = AgenticStageResult(
+        spec=agentic,
+        instructions=(agentic.package_path / "SKILL.md").read_text(
+            encoding="utf-8"
+        ),
         reason="Iterative evidence gathering is required.",
         advertised_skills=("agentic-iterative-rag",),
     )
@@ -575,7 +653,9 @@ def test_sim_rag_component_stage_accepts_semantic_retrieval_stack() -> None:
                         "generator": ["component-grounded-generator"],
                         "critic": ["component-critic"],
                     },
-                    "reason": "Bridge a vocabulary gap and rerank multi-hop evidence.",
+                    "reason": (
+                        "Bridge a vocabulary gap and rerank multi-hop evidence."
+                    ),
                 }
             )
         ]
