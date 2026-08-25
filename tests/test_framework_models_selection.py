@@ -406,6 +406,8 @@ def test_agentic_stage_advertises_then_loads_only_selected_skill() -> None:
     assert result.spec.package_name == "agentic-vanilla-rag"
     assert result.advertised_skills == (
         "agentic-conditional-rag",
+        "agentic-iterative-rag",
+        "agentic-parallel-rag",
         "agentic-rrfusion",
         "agentic-vanilla-rag",
     )
@@ -418,6 +420,46 @@ def test_agentic_stage_advertises_then_loads_only_selected_skill() -> None:
     assert "# Conditional RAG Agentic Skill" not in prompt
     assert "# Vanilla RAG Workflow" not in prompt
     assert "# RRFusion Workflow" not in prompt
+
+
+def test_agentic_stage_can_select_and_load_only_sim_rag() -> None:
+    model = ScriptedModel(
+        [
+            json.dumps(
+                {
+                    "selected_agentic_skill": "agentic-iterative-rag",
+                    "reason": "The answer needs iterative sufficiency checks.",
+                }
+            )
+        ]
+    )
+    manage_result = ManageStageResult(
+        manage_skill="manage-rag-default",
+        guidance="Use bounded iterative retrieval.",
+        reason="Evidence may be incomplete.",
+    )
+
+    result = select_agentic_skill(
+        {"query": "A multi-hop question"},
+        manage_result=manage_result,
+        model=model,
+        skill_root=SAMPLE_ROOT,
+    )
+
+    assert result.spec.package_name == "agentic-iterative-rag"
+    assert result.advertised_skills == (
+        "agentic-conditional-rag",
+        "agentic-iterative-rag",
+        "agentic-parallel-rag",
+        "agentic-rrfusion",
+        "agentic-vanilla-rag",
+    )
+    assert "# SIM-RAG-Inspired Iterative RAG" in result.instructions
+    assert "# Vanilla RAG Workflow" not in result.instructions
+    assert "# RRFusion Workflow" not in result.instructions
+    prompt = model.calls[0][0]
+    assert "agentic-iterative-rag" in prompt
+    assert "# SIM-RAG-Inspired Iterative RAG" not in prompt
 
 
 def test_component_stage_advertises_then_loads_only_selected_skills() -> None:
@@ -533,6 +575,8 @@ def test_component_stage_accepts_conditional_hybrid_bindings() -> None:
         reason="Choose a retrieval route at runtime.",
         advertised_skills=(
             "agentic-conditional-rag",
+            "agentic-iterative-rag",
+            "agentic-parallel-rag",
             "agentic-rrfusion",
             "agentic-vanilla-rag",
         ),
@@ -581,6 +625,60 @@ def test_component_stage_accepts_conditional_hybrid_bindings() -> None:
     assert "component-hyde-rewriter" in prompt
     assert "component-bm25-retriever" in prompt
     assert "component-vector-retriever" in prompt
+
+
+def test_sim_rag_component_stage_accepts_semantic_retrieval_stack() -> None:
+    specs = discover_specs(SAMPLE_ROOT, validate_runtime=False)
+    agentic = next(
+        spec
+        for spec in specs
+        if spec.package_name == "agentic-iterative-rag"
+    )
+    agentic_result = AgenticStageResult(
+        spec=agentic,
+        instructions=(agentic.package_path / "SKILL.md").read_text(
+            encoding="utf-8"
+        ),
+        reason="Iterative evidence gathering is required.",
+        advertised_skills=("agentic-iterative-rag",),
+    )
+    model = ScriptedModel(
+        [
+            json.dumps(
+                {
+                    "component_bindings": {
+                        "rewriter": ["component-hyde-rewriter"],
+                        "retriever": ["component-vector-retriever"],
+                        "reranker": ["component-bge-reranker"],
+                        "generator": ["component-grounded-generator"],
+                        "critic": ["component-critic"],
+                    },
+                    "reason": (
+                        "Bridge a vocabulary gap and rerank multi-hop evidence."
+                    ),
+                }
+            )
+        ]
+    )
+
+    result = select_component_skills(
+        {"query": "A paraphrased multi-hop question"},
+        agentic_result=agentic_result,
+        model=model,
+        skill_root=SAMPLE_ROOT,
+    )
+
+    assert result.bindings == {
+        "rewriter": ("component-hyde-rewriter",),
+        "retriever": ("component-vector-retriever",),
+        "reranker": ("component-bge-reranker",),
+        "generator": ("component-grounded-generator",),
+        "critic": ("component-critic",),
+    }
+    prompt = model.calls[0][0]
+    assert "Prefer BM25" in prompt
+    assert "Use HyDE only with Vector retrieval" in prompt
+    assert "Use BGE Reranker" in prompt
 
 
 def test_select_rag_plan_calls_model_with_strict_progressive_disclosure() -> None:

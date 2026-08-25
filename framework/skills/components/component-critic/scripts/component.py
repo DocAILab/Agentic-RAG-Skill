@@ -14,7 +14,10 @@ def run(inputs, context):
     )
     prompt = (
         "Critique the answer against the question and supplied evidence. "
-        "Check factual support, relevance, and completeness. Return strict JSON "
+        "Approve only when it gives a direct answer and every required fact or "
+        "reasoning hop is supported by the evidence. Abstentions or statements "
+        "that evidence is insufficient must use approved=false, even when honest. "
+        "Put concrete missing evidence targets in issues. Return strict JSON "
         "with exactly these fields: approved (boolean), score (number from 0 to 1), "
         "feedback (string), and issues (array of strings).\n\n"
         f"Question: {query}\n\n"
@@ -41,7 +44,7 @@ def _parse_json(response):
     except json.JSONDecodeError as exc:
         raise ValueError("Critic model must return strict JSON") from exc
     if not isinstance(payload, dict):
-        raise ValueError("Critic model JSON must be an object")
+        raise ValueError("Critic model JSON must be an object")  # noqa: TRY004
     return payload
 
 
@@ -51,13 +54,13 @@ def _validate_result(payload):
     if set(payload) != required:
         raise ValueError("Critic result must contain exactly approved, score, feedback, issues")
     if not isinstance(payload["approved"], bool):
-        raise ValueError("Critic approved must be a boolean")
+        raise ValueError("Critic approved must be a boolean")  # noqa: TRY004
     if isinstance(payload["score"], bool) or not isinstance(
         payload["score"], (int, float)
     ) or not 0 <= payload["score"] <= 1:
         raise ValueError("Critic score must be a number between 0 and 1")
     if not isinstance(payload["feedback"], str):
-        raise ValueError("Critic feedback must be a string")
+        raise ValueError("Critic feedback must be a string")  # noqa: TRY004
     if not isinstance(payload["issues"], list) or not all(
         isinstance(issue, str) for issue in payload["issues"]
     ):

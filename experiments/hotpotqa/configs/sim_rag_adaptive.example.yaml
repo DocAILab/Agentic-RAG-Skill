@@ -1,0 +1,53 @@
+schema_version: 1
+
+skills:
+  root: ../../../framework/skills
+  manage_skill: manage-rag-default
+
+runtime:
+  request_defaults:
+    top_k: 3
+    max_tokens: 4096
+    critic_max_tokens: 4096
+    example_max_attempts: 3
+    max_iterations: 3
+
+demo:
+  corpus_path: ../data/demo/corpus.jsonl
+  test_path: ../data/demo/test.jsonl
+  output:
+    result_path: ../outputs/sim_rag_hotpotqa_20_adaptive.json
+    log_path: ../outputs/sim_rag_hotpotqa_20_adaptive.log.jsonl
+  max_examples: 20
+  candidate_documents_only: true
+  request:
+    top_k: 3
+    max_tokens: 4096
+    critic_max_tokens: 4096
+    example_max_attempts: 3
+    max_iterations: 3
+    constraints:
+      agentic_skill: agentic-iterative-rag
+      purpose: Select compatible Components per HotpotQA question
+
+executor:
+  provider: openai-compatible
+  model: deepseek-v4-flash
+  base_url: https://api.deepseek.com
+  api_key: null
+  api_key_env: DEEPSEEK_API_KEY
+  timeout_seconds: 120
+  extra_headers: {}
+  options: {}
+
+embedding:
+  enabled: true
+  provider: sentence-transformers
+  model: BAAI/bge-large-en-v1.5
+  base_url: null
+  api_key: null
+  api_key_env: null
+  timeout_seconds: 120
+  extra_headers: {}
+  options:
+    normalize_embeddings: true

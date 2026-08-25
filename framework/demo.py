@@ -19,7 +19,13 @@ from .config import (
     embedding_service_fingerprint,
     load_framework_config,
 )
-from .evaluation import EvaluationExample, evaluate_batch, evaluate_example
+from .evaluation import (
+    EvaluationExample,
+    ExampleMetrics,
+    GenerationEvaluator,
+    evaluate_example,
+    summarize_metrics,
+)
 from .models import EmbeddingClient, ModelClient
 from .selection import (
     RAGSelectionPlan,
@@ -153,6 +159,7 @@ def run_demo(
     *,
     model: ModelClient | None = None,
     embedding_model: EmbeddingClient | None = None,
+    generation_evaluator: GenerationEvaluator | None = None,
     max_examples: int | None = None,
     verbose: bool = True,
 ) -> dict[str, Any]:
@@ -227,7 +234,7 @@ def run_demo(
         selected_examples=len(selected_tests),
     )
 
-    evaluation_examples: list[EvaluationExample] = []
+    evaluated_metrics: list[ExampleMetrics] = []
     output_examples: list[dict[str, Any]] = []
     total = len(selected_tests)
     batch_plan: RAGSelectionPlan | None = None
@@ -329,9 +336,12 @@ def run_demo(
             retrieved_ids=retrieved_ids,
             relevant_ids=relevant_ids,
         )
-        metrics = evaluate_example(evaluation)
-        evaluation_examples.append(evaluation)
-        running_summary = evaluate_batch(evaluation_examples).to_dict()
+        metrics = evaluate_example(
+            evaluation,
+            generation_evaluator=generation_evaluator,
+        )
+        evaluated_metrics.append(metrics)
+        running_summary = summarize_metrics(evaluated_metrics).to_dict()
         selection_value = result.get("selection", {})
         selection = (
             dict(selection_value) if isinstance(selection_value, Mapping) else {}
@@ -395,9 +405,9 @@ def run_demo(
             )
             print("Running Summary:", json.dumps(running_summary, ensure_ascii=False))
 
-    summary = evaluate_batch(evaluation_examples)
+    summary = summarize_metrics(evaluated_metrics)
     report = {
-        "schema_version": 1,
+        "schema_version": 2,
         "run_id": event_log.run_id,
         "created_at": datetime.now(UTC).isoformat(),
         "dataset": {

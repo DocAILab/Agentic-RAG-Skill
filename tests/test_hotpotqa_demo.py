@@ -7,8 +7,17 @@ from pathlib import Path
 
 import pytest
 
+from framework import load_framework_config
+
 PROJECT_ROOT = Path(__file__).parents[1]
 DEMO_ROOT = PROJECT_ROOT / "experiments" / "hotpotqa" / "data" / "demo"
+OPTIMIZED_CONFIG = (
+    PROJECT_ROOT
+    / "experiments"
+    / "hotpotqa"
+    / "configs"
+    / "sim_rag_optimized.example.yaml"
+)
 
 
 def _load_jsonl(path: Path) -> list[dict]:
@@ -69,6 +78,22 @@ def test_hotpotqa_demo_manifest_hashes_match_tracked_files() -> None:
     manifest = json.loads((DEMO_ROOT / "manifest.json").read_text(encoding="utf-8"))
     for filename in ("corpus.jsonl", "test.jsonl"):
         assert _sha256(DEMO_ROOT / filename) == manifest["files"][filename]["sha256"]
+
+
+def test_optimized_sim_rag_config_is_ready_for_controlled_rerun() -> None:
+    config = load_framework_config(OPTIMIZED_CONFIG)
+
+    assert config.demo is not None
+    assert config.demo.max_examples == 20
+    assert config.demo.candidate_documents_only is True
+    assert config.demo.request["top_k"] == 3
+    assert config.demo.request["max_iterations"] == 3
+    assert config.demo.request["max_tokens"] == 256
+    assert config.demo.request["critic_max_tokens"] == 4096
+    assert config.demo.request["constraints"]["agentic_skill"] == "agentic-iterative-rag"
+    assert config.embedding is None
+    assert config.executor.base_url == "https://api.deepseek.com"
+    assert config.executor.api_key_env == "DEEPSEEK_API_KEY"
 
 
 def test_hotpotqa_demo_rebuild_is_reproducible_when_raw_data_exists(

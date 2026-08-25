@@ -19,6 +19,7 @@ Analyze the query and execution state before any Agentic or Component Skill body
 
 - Prefer `agentic-vanilla-rag` for ordinary single-route retrieval followed by grounded generation.
 - Prefer `agentic-rrfusion` when lexical and semantic retrieval are complementary or recall is more important than minimum latency.
+- Prefer `agentic-parallel-rag` for multi-hop or comparison questions that combine evidence from several documents, when rewriting or decomposing the query would improve recall, or when per-branch reranking is expected to help.
 - Reject any candidate that is not an Agentic Skill.
 - Do not select Component Skills directly.
 

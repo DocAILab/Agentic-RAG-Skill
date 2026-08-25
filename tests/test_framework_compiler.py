@@ -278,6 +278,40 @@ def test_run_compiled_conditional_rag_executes_hybrid_route() -> None:
     assert "imaginary lunar orchards" not in model.calls[2][0]
 
 
+def test_parallel_rag_accepts_hyde_with_mixed_retrievers() -> None:
+    """验证 parallel workflow 允许 HyDE 与 BM25+Vector 混合分支。"""
+    model = ScriptedExecutorModel(
+        [
+            "Apple trees grow fruit in orchards.",
+            "Fused answer.",
+        ]
+    )
+    context = RuntimeComponentContext(
+        executor_model=model,
+        embedding_model=KeywordEmbeddingModel(),
+    )
+
+    result = run_compiled_rag(
+        workflow="agentic-parallel-rag",
+        bindings={
+            "rewriter": ["component-hyde-rewriter"],
+            "retrievers": [
+                "component-bm25-retriever",
+                "component-vector-retriever",
+            ],
+            "reranker": [],
+            "generator": ["component-grounded-generator"],
+        },
+        request={"query": "apple fruit", "documents": DOCUMENTS, "top_k": 2},
+        skill_root=SAMPLE_ROOT,
+        context=context,
+    )
+
+    assert result["answer"] == "Fused answer."
+    assert result["documents"][0]["id"] == "apple"
+    assert result["trace"][0]["step"] == "rewrite"
+
+
 def test_run_compiled_rag_executes_rrfusion_with_two_retrievers() -> None:
     """验证显式单指令能够绑定 BM25、Vector 和 RRFusion workflow。"""
     model = ScriptedExecutorModel(["Fused answer."])

@@ -126,7 +126,7 @@ result = run_rag_from_config(
 python -B run_demo.py
 ```
 
-`framework.demo.run_demo()` 只创建一次模型客户端。`select_skills_per_example: true` 时，每题独立执行三级选择和编译，用于 query-level adaptive RAG；设为 `false` 时，framework 根据请求参数、共享语料统计和均匀抽样的问题文本只选择并编译一次，所有问题复用同一命令。问题抽样数由 `batch_selection_query_sample_size` 控制，默认 20；框架同时发送总问题数与实际抽样数，不发送完整问题集。两种模式都会逐题执行检索、生成和 Hit@1、Hit@10、EM、F1 测评。终端在每题后打印单题指标与截至当前题的累计宏平均；最终答案、Skill 选择、检索 ID、trace、编译指令与整体宏平均写入 `output.result_path`。所有阶段事件以带 `run_id` 的 JSON Lines 追加到 `output.log_path`。安装项目后等价命令为 `ragskill-demo`；`--limit N` 可临时覆盖运行条数。
+`framework.demo.run_demo()` 只创建一次模型客户端。`select_skills_per_example: true` 时，每题独立执行三级选择和编译，用于 query-level adaptive RAG；设为 `false` 时，framework 根据请求参数、共享语料统计和均匀抽样的问题文本只选择并编译一次，所有问题复用同一命令。问题抽样数由 `batch_selection_query_sample_size` 控制，默认 20；框架同时发送总问题数与实际抽样数，不发送完整问题集。两种模式都会逐题执行检索、生成和 XRAG 对齐测评。终端在每题后打印单题指标与截至当前题的累计宏平均；最终答案、Skill 选择、检索 ID、trace、编译指令与整体宏平均写入 `output.result_path`。所有阶段事件以带 `run_id` 的 JSON Lines 追加到 `output.log_path`。安装项目后等价命令为 `ragskill-demo`；`--limit N` 可临时覆盖运行条数。
 
 ## 3. 可移植 Skill 包
 
@@ -204,6 +204,50 @@ slots:
     min: 1
     max: 1
 ```
+
+### SIM-RAG-inspired Iterative Agentic
+
+Optimization contract:
+
+- `max_tokens` controls Generator output only. Optional `critic_max_tokens`
+  controls Critic output independently, defaults to `4096`, and must be a
+  positive integer.
+- An abstention is never sufficient: the workflow overrides an accidentally
+  approved abstention and continues retrieval when another round is available.
+- Follow-up queries contain at most three bounded missing-evidence issues;
+  bounded Critic feedback is used only when no issue is available.
+- A format-only rejection triggers one same-evidence answer regeneration and a
+  second Critic check. Mixed, ambiguous, or evidence-gap feedback continues
+  retrieval. This does not change the Component request or result schemas.
+- Each iteration trace includes `document_ids` and `new_document_ids`, allowing
+  HotpotQA reports to expose per-round support gain.
+- Evaluation reports include `recall@10` and `all_support@10` in addition to
+  Hit@1, Hit@10, EM, and F1.
+
+`agentic-iterative-rag`（运行时 ID：`agentic.iterative.sim_rag`）是受 SIM-RAG
+推理架构启发的有界迭代工作流，不包含 Self-Practicing、Critic 训练、rationale
+生成或论文实验复现。
+
+它在标准 `RAGRequest` 上增加可选字段 `max_iterations`，默认值为 `3`。
+`query` 必须是非空字符串，`top_k` 和 `max_iterations` 必须是正整数。
+Critic 使用以下标准数据包：
+
+- `CritiqueRequest`：`query`、`documents`、`answer`，以及可选 `max_tokens`
+- `CritiqueResult`：`approved`、`score`、`feedback`、`issues`
+
+每轮 Retriever 的召回深度为 `top_k × iteration`。首轮检索原问题；后续轮将
+Critic 的 `feedback` 和 `issues` 组合为 follow-up query。可选 Rewriter 只改写
+当前检索查询，不产生证据。证据按文档 `id` 去重并保留首次出现顺序；可选
+Reranker、Generator 和 Critic 始终使用原始问题与累计证据。
+
+只有 `CritiqueResult.approved=true` 时才返回候选答案。Critic 拒绝且达到最大
+轮数，或该轮没有新增证据时，工作流返回
+`Insufficient evidence to answer reliably.`。
+
+`RAGResult.trace` 为每轮写入一个 `iteration` 事件，包含轮次、原始/检索查询、
+召回深度、文档数、新增文档数、候选答案和完整 Critic 结果。最后写入一个
+`stop` 事件，`reason` 只能是 `critic_approved`、`max_iterations` 或
+`no_new_evidence`。
 
 统一入口：
 
@@ -316,14 +360,28 @@ run_compiled_rag(
 
 ## 9. 测评
 
-首版测评模块位于 `framework/evaluation/`，明确区分检索质量与答案质量：
+测评模块位于 `framework/evaluation/`，实现与只读参考项目 XRAG 的 `src/xrag/eval/evaluate_rag.py` 对齐，并将同名风险隔离到 `retrieval`、`generation` 两组。
 
-- `Hit@1`、`Hit@10`：若前 K 个检索文档中至少出现一个相关文档标识符，则该样本得 1，否则得 0。
-- `EM`：预测答案与标准答案经过小写化、移除英文标点和冠词、合并空白后完全一致，则得 1。
-- `F1`：对归一化后的预测答案与标准答案计算词元级精确率和召回率的调和平均。
-- 一条样本存在多个标准答案别名时，`EM` 和 `F1` 分别取别名中的最高分；批量入口对各样本做宏平均。
+检索指标：
 
-这里的 `EM/F1` 是 HotpotQA 风格的**答案指标**。只读参考项目 XRAG 曾使用同名指标比较检索 ID 集合，新 framework 不沿用该混名。
+- `F1@1`：只取第一条检索结果，与全部标准相关 ID 按集合 TP、FP、FN 计算 F1。
+- `F1`：每题先令 `n` 为去重后的标准相关 ID 数量，只取 Top-n 检索结果计算集合 F1；批量结果对单题 F1 做宏平均。
+- `MRR`：第一个相关检索结果的排名倒数；未检索到相关文档时为 0。
+- `Hit@1`、`Hit@10`：前 1 或前 10 个结果中至少有一个相关 ID 时为 1，否则为 0。
+- `MAP`：原样保留 XRAG 的特殊公式：按标准相关 ID 的给定顺序遍历，累加 `(标准序号 + 1) / (首次检索名次 + 1)` 后除以标准相关 ID 数量。它不是常见的逐检索位置 Average Precision，因此 `relevant_ids` 必须是有序序列。
+- `DCG`：相关文档使用二值增益 1，并按 `1 / log2(rank + 1)` 折扣。
+- `IDCG`：原样保留 XRAG 规则，只把当前结果中已经检索到的相关项前移，不补入漏检相关项。
+- `NDCG`：`DCG / IDCG`，IDCG 为 0 时返回 0。
+
+生成指标：
+
+- `ChrF`、`ChrF++`：使用 SacreBLEU CHRF，默认字符 n-gram 阶数为 6、`beta=2`；ChrF++ 额外设置 `word_order=2`。两者均按 Jury/XRAG 将百分制分数除以 100。
+- `METEOR`：使用 NLTK METEOR；输入先按 Jury tokenizer 小写、移除 ASCII 标点并折叠空白。
+- `R1`、`R2`、`RL`：分别为 Google `rouge-score` 的 ROUGE-1、ROUGE-2、ROUGE-L F-measure，不启用词干化；多参考答案逐指标取最大值。
+- `PPL`：使用 `openai-community/gpt2` 和 Hugging Face Evaluate 相同的 BOS、交叉熵与指数计算；与 XRAG 一样，当 `int(PPL) > 1600` 时记为 0。framework 只改变工程实现，在进程内复用模型，不改变计算公式。
+- `CER`、`WER`：使用 JiWER 的字符错误率和词错误率；保留 Jury 默认行为，多参考答案取最大错误率。
+
+生成指标不包含 EM 或词元 F1。批量报告对每项单题指标做算术宏平均，JSON schema 2 的 `metrics` 与 `summary` 均使用 `retrieval`、`generation` 两级结构。首次运行 METEOR 可能下载 NLTK 数据，首次运行 PPL 会下载 GPT-2；可使用 `pip install -e ".[evaluation]"` 安装所需依赖。
 
 ```python
 from framework import evaluate_rag_result
@@ -331,9 +389,9 @@ from framework import evaluate_rag_result
 metrics = evaluate_rag_result(
     result,
     gold_answers=["Paris", "Paris, France"],
-    relevant_ids={"support-document-id"},
+    relevant_ids=["support-document-id"],
 )
 print(metrics.to_dict())
 ```
 
-`evaluate_example()` 接收显式 `EvaluationExample`，适合构造离线样本；`evaluate_batch()` 返回样本数和四项指标的宏平均；`evaluate_rag_result()` 可直接消费 `run_rag()` 的 `answer` 与有序 `documents`，默认从每个文档的 `id` 字段读取检索标识符。
+`evaluate_example()` 接收显式 `EvaluationExample`，适合构造离线样本；`evaluate_batch()` 返回样本数和全部指标的宏平均；`evaluate_rag_result()` 可直接消费 `run_rag()` 的 `answer` 与有序 `documents`，默认从每个文档的 `id` 字段读取检索标识符。`summarize_metrics()` 可聚合已经计算过的 `ExampleMetrics`，避免重复运行生成指标。

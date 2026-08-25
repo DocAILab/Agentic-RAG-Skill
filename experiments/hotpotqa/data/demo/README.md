@@ -24,7 +24,7 @@ python -B experiments/hotpotqa/scripts/build_demo.py
 python -B run_demo.py
 ```
 
-入口从 `framework/settings.yaml` 的 `demo` 段读取 corpus、测试集、样本数量、请求参数和结果路径，自动完成三级 Skill 选择、检索生成、Hit@1/Hit@10/EM/F1 测评及结果保存。安装项目后也可以直接运行 `ragskill-demo`。
+入口从 `framework/settings.yaml` 的 `demo` 段读取 corpus、测试集、样本数量、请求参数和结果路径，自动完成三级 Skill 选择、检索生成、XRAG 对齐的八项检索指标和九项生成指标测评及结果保存。安装项目后也可以直接运行 `ragskill-demo`。
 
 默认配置运行全部 100 题，在共享的 2000 篇语料上允许模型自适应选择 Retriever。常用配置调整：
 
@@ -43,3 +43,33 @@ python -B run_demo.py
 ```powershell
 python -B run_demo.py --limit 5
 ```
+
+## Optimized SIM-RAG rerun
+
+The tracked configuration fixes the same 20-example candidate-document subset
+and requests `agentic-iterative-rag` with BM25, the grounded Generator, and the
+Critic. It keeps answer generation at 256 tokens while giving the Critic an
+independent 4096-token budget:
+
+```powershell
+python -B -m experiments.hotpotqa.scripts.run_sim_rag --config experiments/hotpotqa/configs/sim_rag_optimized.example.yaml
+```
+
+Set `DEEPSEEK_API_KEY` before running. The schema-v2 report includes Hit@1,
+Hit@10, Recall@10, All-Support@10, EM, F1, and per-iteration support gain.
+
+## Adaptive SIM-RAG Component selection
+
+This runner fixes `agentic-iterative-rag` but asks the Executor Model to select its
+compatible Components independently for every question. It records the selected
+bindings, selection reason, aggregate selection counts, execution trace, and
+metrics in a schema-v3 report:
+
+```powershell
+python -B -m experiments.hotpotqa.scripts.run_sim_rag_adaptive --config experiments/hotpotqa/configs/sim_rag_adaptive.example.yaml
+```
+
+Before a real run, install the optional local model dependency with
+`pip install -e ".[embedding,rerank]"`. The first Vector or BGE selection may
+download its configured model weights. The fixed-BM25 runner remains the control
+baseline for comparing adaptive selection.
