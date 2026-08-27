@@ -65,13 +65,13 @@ class KeywordEmbeddingModel:
         ]
 
 
-def _vanilla_plan() -> RAGSelectionPlan:
-    """构造用于编译测试的 Vanilla RAG 选择计划。"""
+def _sequential_plan() -> RAGSelectionPlan:
+    """构造用于编译测试的 Sequential RAG Skill 选择计划。"""
     return RAGSelectionPlan(
         manage_skill="manage-rag-default",
         manage_guidance="Use one retrieval route.",
         manage_reason="Simple question.",
-        agentic_skill="agentic-vanilla-rag",
+        agentic_skill="agentic-sequential-skill",
         agentic_reason="Sequential retrieval is sufficient.",
         component_bindings={
             "rewriter": (),
@@ -84,12 +84,12 @@ def _vanilla_plan() -> RAGSelectionPlan:
 
 
 def _vector_plan() -> RAGSelectionPlan:
-    """构造使用持久化 Vector Retriever 的 Vanilla RAG 计划。"""
+    """构造使用持久化 Vector Retriever 的 Sequential RAG Skill 计划。"""
     return RAGSelectionPlan(
         manage_skill="manage-rag-default",
         manage_guidance="Use vector retrieval.",
         manage_reason="Shared corpus evaluation.",
-        agentic_skill="agentic-vanilla-rag",
+        agentic_skill="agentic-sequential-skill",
         agentic_reason="One retrieval route is sufficient.",
         component_bindings={
             "rewriter": (),
@@ -102,11 +102,11 @@ def _vector_plan() -> RAGSelectionPlan:
 
 
 def test_compile_rag_command_executes_concrete_components() -> None:
-    """验证编译命令把 Vanilla workflow 绑定到 BM25 和真实生成组件。"""
+    """验证编译命令把 Sequential workflow 绑定到 BM25 和真实生成组件。"""
     model = ScriptedExecutorModel(["Apples grow in orchards."])
     context = RuntimeComponentContext(executor_model=model)
     command = compile_rag_command(
-        _vanilla_plan(),
+        _sequential_plan(),
         skill_root=SAMPLE_ROOT,
         context=context,
     )
@@ -152,7 +152,7 @@ def test_run_compiled_rag_executes_hyde_vector_pipeline() -> None:
     )
 
     result = run_compiled_rag(
-        workflow="agentic-vanilla-rag",
+        workflow="agentic-sequential-skill",
         bindings={
             "rewriter": ["component-hyde-rewriter"],
             "retriever": ["component-vector-retriever"],
@@ -196,7 +196,7 @@ def test_compiler_rejects_hyde_with_bm25_retriever() -> None:
         ),
     ):
         run_compiled_rag(
-            workflow="agentic-vanilla-rag",
+            workflow="agentic-sequential-skill",
             bindings={
                 "rewriter": ["component-hyde-rewriter"],
                 "retriever": ["component-bm25-retriever"],
@@ -428,7 +428,7 @@ def test_runtime_context_reloads_persisted_index_without_reencoding_corpus(
 
 def test_compile_rag_command_rejects_incompatible_component_binding() -> None:
     """验证编译器会再次拒绝跨 capability 的恶意或损坏绑定。"""
-    plan = _vanilla_plan()
+    plan = _sequential_plan()
     invalid_plan = RAGSelectionPlan(
         manage_skill=plan.manage_skill,
         manage_guidance=plan.manage_guidance,
@@ -458,7 +458,7 @@ def test_vector_component_requires_embedding_model_at_execution() -> None:
 
     with pytest.raises(ExecutionError, match="no embedding_model"):
         run_compiled_rag(
-            workflow="agentic-vanilla-rag",
+            workflow="agentic-sequential-skill",
             bindings={
                 "rewriter": [],
                 "retriever": ["component-vector-retriever"],
@@ -483,7 +483,7 @@ def test_run_rag_is_one_call_from_selection_to_generated_answer() -> None:
             ),
             json.dumps(
                 {
-                    "selected_agentic_skill": "agentic-vanilla-rag",
+                    "selected_agentic_skill": "agentic-sequential-skill",
                     "reason": "Sequential retrieval is sufficient.",
                 }
             ),
@@ -515,7 +515,7 @@ def test_run_rag_is_one_call_from_selection_to_generated_answer() -> None:
 
     assert result["answer"] == "Apples grow in orchards."
     assert result["documents"][0]["id"] == "apple"
-    assert result["selection"]["agentic_skill"] == "agentic-vanilla-rag"
+    assert result["selection"]["agentic_skill"] == "agentic-sequential-skill"
     assert result["selection"]["component_bindings"]["retriever"] == [
         "component-bm25-retriever"
     ]

@@ -1,4 +1,0 @@
-interface:
-  display_name: "Vanilla RAG Workflow"
-  short_description: "Arrange one-pass retrieval and generation"
-  default_prompt: "Use $agentic-vanilla-rag to arrange a one-pass RAG workflow."

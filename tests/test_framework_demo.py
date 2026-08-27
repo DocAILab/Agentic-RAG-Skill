@@ -67,7 +67,7 @@ def test_run_demo_uses_configured_data_and_writes_report(tmp_path, capsys) -> No
             ),
             json.dumps(
                 {
-                    "selected_agentic_skill": "agentic-vanilla-rag",
+                    "selected_agentic_skill": "agentic-sequential-skill",
                     "reason": "A sequential route is sufficient.",
                 }
             ),
@@ -128,7 +128,7 @@ def test_run_demo_uses_configured_data_and_writes_report(tmp_path, capsys) -> No
     assert report["schema_version"] == 2
     assert report["examples"][0]["id"] == first_example["id"]
     assert report["examples"][0]["selection"]["agentic_skill"] == (
-        "agentic-vanilla-rag"
+        "agentic-sequential-skill"
     )
     assert json.loads(demo.result_path.read_text(encoding="utf-8")) == report
     events = [
@@ -176,7 +176,7 @@ def test_run_demo_can_select_once_and_reuse_pipeline_for_batch(tmp_path) -> None
             ),
             json.dumps(
                 {
-                    "selected_agentic_skill": "agentic-vanilla-rag",
+                    "selected_agentic_skill": "agentic-sequential-skill",
                     "reason": "Use a reusable sequential route.",
                 }
             ),
@@ -212,7 +212,7 @@ def test_run_demo_can_select_once_and_reuse_pipeline_for_batch(tmp_path) -> None
     )
 
     assert report["summary"]["count"] == 2
-    assert report["batch_selection"]["agentic_skill"] == "agentic-vanilla-rag"
+    assert report["batch_selection"]["agentic_skill"] == "agentic-sequential-skill"
     assert len(model.calls) == 5
     assert '"query_count": 2' in model.calls[0][0]
     assert '"sampled_query_count": 2' in model.calls[0][0]

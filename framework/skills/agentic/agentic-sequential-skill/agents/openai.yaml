@@ -1,0 +1,4 @@
+interface:
+  display_name: "Sequential RAG Skill"
+  short_description: "Arrange one-pass retrieval and generation"
+  default_prompt: "Use $agentic-sequential-skill to arrange a one-pass RAG workflow."

@@ -183,7 +183,7 @@ Agentic Skill 本质是流程安排。它必须包含 `scripts/workflow.py`，�
 
 ```yaml
 schema_version: 1
-runtime_id: agentic.sequential.vanilla_rag
+runtime_id: agentic.sequential.skill
 kind: agentic
 runtime:
   type: python-workflow
@@ -268,7 +268,7 @@ components.call_all(slot, inputs)
 
 Agentic 脚本可以实现条件、循环、并行、融合、重试和终止逻辑，但所有原子 RAG 能力必须通过槽位空调用完成。
 
-当前 Vanilla RAG 的可选 `rewriter` 槽位采用 single-sample HyDE（`N=1`）：Rewriter 接收原始查询，只生成一个假设文档，并将单个 `rewritten_query` 交给语义 Vector Retriever。Retriever 之后的 Reranker 和 Generator 继续使用原始查询；假设文档不得加入检索证据或直接用于最终回答。
+当前 Sequential RAG Skill 的可选 `rewriter` 槽位采用 single-sample HyDE（`N=1`）：Rewriter 接收原始查询，只生成一个假设文档，并将单个 `rewritten_query` 交给语义 Vector Retriever。Retriever 之后的 Reranker 和 Generator 继续使用原始查询；假设文档不得加入检索证据或直接用于最终回答。
 
 ## 6. Component Skill
 
@@ -341,7 +341,7 @@ V0 的 HyDE 接口固定为 single-sample HyDE（`N=1`）：每个查询只调�
 
 ```python
 run_compiled_rag(
-    workflow="agentic-vanilla-rag",
+    workflow="agentic-sequential-skill",
     bindings={
         "rewriter": [],
         "retriever": ["component-bm25-retriever"],

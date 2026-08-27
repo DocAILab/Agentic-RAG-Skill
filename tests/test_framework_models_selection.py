@@ -335,8 +335,12 @@ def test_manage_stage_exposes_only_manage_skill_body() -> None:
     assert model.calls[0][3] == 8192
     prompt = model.calls[0][0]
     assert "# Default RAG Manager" in prompt
+    assert "agentic-sequential-skill" in prompt
+    assert "agentic-iterative-rag" in prompt
+    assert "agentic-parallel-rag" in prompt
+    assert "agentic-rrfusion" not in prompt
     assert "Arrange a sequential RAG workflow" not in prompt
-    assert "# Vanilla RAG Workflow" not in prompt
+    assert "# Sequential RAG Skill" not in prompt
 
 
 def test_manage_stage_summarizes_large_corpus_without_document_text() -> None:
@@ -384,7 +388,7 @@ def test_agentic_stage_advertises_then_loads_only_selected_skill() -> None:
         [
             json.dumps(
                 {
-                    "selected_agentic_skill": "agentic-vanilla-rag",
+                    "selected_agentic_skill": "agentic-sequential-skill",
                     "reason": "A sequential route is sufficient.",
                 }
             )
@@ -403,22 +407,22 @@ def test_agentic_stage_advertises_then_loads_only_selected_skill() -> None:
         skill_root=SAMPLE_ROOT,
     )
 
-    assert result.spec.package_name == "agentic-vanilla-rag"
+    assert result.spec.package_name == "agentic-sequential-skill"
     assert result.advertised_skills == (
         "agentic-conditional-rag",
         "agentic-iterative-rag",
         "agentic-parallel-rag",
         "agentic-rrfusion",
-        "agentic-vanilla-rag",
+        "agentic-sequential-skill",
     )
-    assert "# Vanilla RAG Workflow" in result.instructions
+    assert "# Sequential RAG Skill" in result.instructions
     prompt = model.calls[0][0]
     assert "Prefer a single retrieval route." in prompt
     assert "Route each RAG request at runtime" in prompt
     assert "Arrange a sequential RAG workflow" in prompt
     assert "Arrange parallel retrieval" in prompt
+    assert "# Sequential RAG Skill" not in prompt
     assert "# Conditional RAG Agentic Skill" not in prompt
-    assert "# Vanilla RAG Workflow" not in prompt
     assert "# RRFusion Workflow" not in prompt
 
 
@@ -452,10 +456,10 @@ def test_agentic_stage_can_select_and_load_only_sim_rag() -> None:
         "agentic-iterative-rag",
         "agentic-parallel-rag",
         "agentic-rrfusion",
-        "agentic-vanilla-rag",
+        "agentic-sequential-skill",
     )
     assert "# SIM-RAG-Inspired Iterative RAG" in result.instructions
-    assert "# Vanilla RAG Workflow" not in result.instructions
+    assert "# Sequential RAG Skill" not in result.instructions
     assert "# RRFusion Workflow" not in result.instructions
     prompt = model.calls[0][0]
     assert "agentic-iterative-rag" in prompt
@@ -466,13 +470,13 @@ def test_component_stage_advertises_then_loads_only_selected_skills() -> None:
     """验证第三步只广告兼容组件，并在选择后加载所选组件正文。"""
     specs = discover_specs(SAMPLE_ROOT, validate_runtime=False)
     agentic = next(
-        spec for spec in specs if spec.package_name == "agentic-vanilla-rag"
+        spec for spec in specs if spec.package_name == "agentic-sequential-skill"
     )
     agentic_result = AgenticStageResult(
         spec=agentic,
         instructions=(agentic.package_path / "SKILL.md").read_text(encoding="utf-8"),
         reason="Sequential retrieval is sufficient.",
-        advertised_skills=("agentic-rrfusion", "agentic-vanilla-rag"),
+        advertised_skills=("agentic-rrfusion", "agentic-sequential-skill"),
     )
     model = ScriptedModel(
         [
@@ -506,7 +510,7 @@ def test_component_stage_advertises_then_loads_only_selected_skills() -> None:
         "component-bm25-retriever"
     ]
     prompt = model.calls[0][0]
-    assert "# Vanilla RAG Workflow" in prompt
+    assert "# Sequential RAG Skill" in prompt
     assert (
         "Retrieve and rank title-and-text documents with a field-aware BM25F"
         in prompt
@@ -519,7 +523,7 @@ def test_component_stage_rejects_hyde_with_bm25_retriever() -> None:
     """验证 Component 选择阶段拒绝 HyDE 与 BM25 的错误组合。"""
     specs = discover_specs(SAMPLE_ROOT, validate_runtime=False)
     agentic = next(
-        spec for spec in specs if spec.package_name == "agentic-vanilla-rag"
+        spec for spec in specs if spec.package_name == "agentic-sequential-skill"
     )
     agentic_result = AgenticStageResult(
         spec=agentic,
@@ -527,7 +531,7 @@ def test_component_stage_rejects_hyde_with_bm25_retriever() -> None:
             encoding="utf-8"
         ),
         reason="Sequential retrieval is sufficient.",
-        advertised_skills=("agentic-rrfusion", "agentic-vanilla-rag"),
+        advertised_skills=("agentic-rrfusion", "agentic-sequential-skill"),
     )
     model = ScriptedModel(
         [
@@ -693,7 +697,7 @@ def test_select_rag_plan_calls_model_with_strict_progressive_disclosure() -> Non
             ),
             json.dumps(
                 {
-                    "selected_agentic_skill": "agentic-vanilla-rag",
+                    "selected_agentic_skill": "agentic-sequential-skill",
                     "reason": "One route is sufficient.",
                 }
             ),
@@ -717,7 +721,7 @@ def test_select_rag_plan_calls_model_with_strict_progressive_disclosure() -> Non
         skill_root=SAMPLE_ROOT,
     )
 
-    assert plan.agentic_skill == "agentic-vanilla-rag"
+    assert plan.agentic_skill == "agentic-sequential-skill"
     assert plan.component_bindings == {
         "rewriter": (),
         "retriever": ("component-bm25-retriever",),
@@ -727,10 +731,10 @@ def test_select_rag_plan_calls_model_with_strict_progressive_disclosure() -> Non
     assert len(model.calls) == 3
     manage_prompt, agentic_prompt, component_prompt = [call[0] for call in model.calls]
     assert "# Default RAG Manager" in manage_prompt
-    assert "# Vanilla RAG Workflow" not in manage_prompt
+    assert "# Sequential RAG Skill" not in manage_prompt
     assert "Arrange a sequential RAG workflow" in agentic_prompt
-    assert "# Vanilla RAG Workflow" not in agentic_prompt
-    assert "# Vanilla RAG Workflow" in component_prompt
+    assert "# Sequential RAG Skill" not in agentic_prompt
+    assert "# Sequential RAG Skill" in component_prompt
     assert (
         "Retrieve and rank title-and-text documents with a field-aware BM25F"
         in component_prompt
@@ -744,7 +748,7 @@ def test_select_rag_plan_rejects_incompatible_component_choice() -> None:
     model = ScriptedModel(
         [
             '{"agentic_selection_guidance":"Use sequential RAG."}',
-            '{"selected_agentic_skill":"agentic-vanilla-rag"}',
+            '{"selected_agentic_skill":"agentic-sequential-skill"}',
             json.dumps(
                 {
                     "component_bindings": {
