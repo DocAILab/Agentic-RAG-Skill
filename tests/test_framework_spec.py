@@ -85,7 +85,7 @@ def test_sample_repository_has_three_strict_skill_levels() -> None:
     assert {
         "agentic-rrfusion",
         "agentic-iterative-rag",
-        "agentic-vanilla-rag",
+        "agentic-sequential-skill",
     } <= packages_by_kind[SkillKind.AGENTIC]
     assert {
         "component-bge-reranker",
@@ -174,9 +174,9 @@ def test_agentic_scripts_only_arrange_abstract_component_calls() -> None:
         assert imports == []
 
 
-def test_vanilla_workflow_calls_retriever_then_generator() -> None:
-    """验证 Vanilla workflow 按检索后生成的顺序调用组件。"""
-    workflow = load_runtime_callable(_specs_by_name()["agentic-vanilla-rag"])
+def test_sequential_workflow_calls_retriever_then_generator() -> None:
+    """验证 Sequential workflow 按检索后生成的顺序调用组件。"""
+    workflow = load_runtime_callable(_specs_by_name()["agentic-sequential-skill"])
     components = FakeComponents(
         {
             "retriever": [
@@ -195,9 +195,9 @@ def test_vanilla_workflow_calls_retriever_then_generator() -> None:
     assert [call[0] for call in components.calls] == ["retriever", "generator"]
 
 
-def test_vanilla_workflow_uses_hyde_only_for_retrieval() -> None:
+def test_sequential_workflow_uses_hyde_only_for_retrieval() -> None:
     """验证 HyDE 改写只进入检索器，后续组件仍使用原始问题。"""
-    workflow = load_runtime_callable(_specs_by_name()["agentic-vanilla-rag"])
+    workflow = load_runtime_callable(_specs_by_name()["agentic-sequential-skill"])
     original_query = "Where do apples grow?"
     hypothetical_document = "Apple trees grow in temperate orchards."
     components = FakeComponents(
@@ -250,11 +250,11 @@ def test_vanilla_workflow_uses_hyde_only_for_retrieval() -> None:
         {"rewritten_query": "   "},
     ],
 )
-def test_vanilla_workflow_rejects_invalid_rewriter_result(
+def test_sequential_workflow_rejects_invalid_rewriter_result(
     rewriter_result,
 ) -> None:
     """验证 workflow 拒绝缺失、非字符串或空白的改写结果。"""
-    workflow = load_runtime_callable(_specs_by_name()["agentic-vanilla-rag"])
+    workflow = load_runtime_callable(_specs_by_name()["agentic-sequential-skill"])
     components = FakeComponents(
         {
             "rewriter": [lambda inputs: rewriter_result],

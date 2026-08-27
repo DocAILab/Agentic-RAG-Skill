@@ -149,7 +149,7 @@ def test_run_rag_from_config_executes_complete_pipeline(monkeypatch) -> None:
             ),
             json.dumps(
                 {
-                    "selected_agentic_skill": "agentic-vanilla-rag",
+                    "selected_agentic_skill": "agentic-sequential-skill",
                     "reason": "Sequential retrieval is sufficient.",
                 }
             ),

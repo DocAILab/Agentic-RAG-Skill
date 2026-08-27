@@ -1,9 +1,9 @@
 ---
-name: agentic-vanilla-rag
+name: agentic-sequential-skill
 description: Arrange a sequential RAG workflow with one optional query rewriter, one required retriever, one optional reranker, and one required grounded generator. Use after Manage selects a simple one-route retrieval and generation process.
 ---
 
-# Vanilla RAG Workflow
+# Sequential RAG Skill
 
 Use this Skill only after the Manage stage selects it. This Skill defines process order and Component selection guidance; it does not implement rewriting, retrieval, reranking, or generation.
 
