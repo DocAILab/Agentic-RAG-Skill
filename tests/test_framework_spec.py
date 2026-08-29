@@ -85,6 +85,7 @@ def test_sample_repository_has_three_strict_skill_levels() -> None:
     assert {"manage-rag-default"} <= packages_by_kind[SkillKind.MANAGE]
     assert {
         "agentic-conditional-rag",
+        "agentic-hybrid-rag",
         "agentic-iterative-rag",
         "agentic-sequential-skill",
         "agentic-parallel-rag",
