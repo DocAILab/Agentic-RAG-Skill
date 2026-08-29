@@ -312,8 +312,8 @@ def test_parallel_rag_accepts_hyde_with_mixed_retrievers() -> None:
     assert result["trace"][0]["step"] == "rewrite"
 
 
-def test_run_compiled_rag_executes_rrfusion_with_two_retrievers() -> None:
-    """验证显式单指令能够绑定 BM25、Vector 和 RRFusion workflow。"""
+def test_run_compiled_rag_executes_parallel_rag_with_two_retrievers() -> None:
+    """验证显式单指令能够绑定 BM25、Vector 和 Parallel workflow。"""
     model = ScriptedExecutorModel(["Fused answer."])
     context = RuntimeComponentContext(
         executor_model=model,
@@ -321,8 +321,9 @@ def test_run_compiled_rag_executes_rrfusion_with_two_retrievers() -> None:
     )
 
     result = run_compiled_rag(
-        workflow="agentic-rrfusion",
+        workflow="agentic-parallel-rag",
         bindings={
+            "rewriter": [],
             "retrievers": [
                 "component-bm25-retriever",
                 "component-vector-retriever",
@@ -616,7 +617,7 @@ def test_run_rag_executes_conditional_hybrid_pipeline() -> None:
     assert len(model.calls) == 6
 
 
-def test_run_rag_executes_modified_retrievers_in_original_rrfusion_chain() -> None:
+def test_run_rag_executes_modified_retrievers_in_parallel_chain() -> None:
     """验证原框架可选择、绑定并执行修改后的两种 Retriever。"""
     model = ScriptedExecutorModel(
         [
@@ -630,13 +631,14 @@ def test_run_rag_executes_modified_retrievers_in_original_rrfusion_chain() -> No
             ),
             json.dumps(
                 {
-                    "selected_agentic_skill": "agentic-rrfusion",
-                    "reason": "RRFusion executes and combines both retrieval routes.",
+                    "selected_agentic_skill": "agentic-parallel-rag",
+                    "reason": "Parallel RAG combines both retrieval routes.",
                 }
             ),
             json.dumps(
                 {
                     "component_bindings": {
+                        "rewriter": [],
                         "retrievers": [
                             "component-bm25-retriever",
                             "component-vector-retriever",
@@ -665,17 +667,17 @@ def test_run_rag_executes_modified_retrievers_in_original_rrfusion_chain() -> No
 
     assert result["answer"] == "Apples grow in orchards."
     assert result["documents"][0]["id"] == "apple"
-    assert result["selection"]["agentic_skill"] == "agentic-rrfusion"
+    assert result["selection"]["agentic_skill"] == "agentic-parallel-rag"
     assert result["selection"]["component_bindings"]["retrievers"] == [
         "component-bm25-retriever",
         "component-vector-retriever",
     ]
     assert result["trace"] == [
         {
-            "step": "parallel_retrieve_and_fuse",
+            "step": "parallel_retrieve_and_rerank",
             "branch_count": 2,
-            "document_count": 2,
         },
+        {"step": "fuse", "document_count": 2},
         {"step": "generate"},
     ]
     assert "component-bm25-retriever" in result["compiled_instruction"]

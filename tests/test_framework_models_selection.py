@@ -412,7 +412,6 @@ def test_agentic_stage_advertises_then_loads_only_selected_skill() -> None:
         "agentic-conditional-rag",
         "agentic-iterative-rag",
         "agentic-parallel-rag",
-        "agentic-rrfusion",
         "agentic-sequential-skill",
     )
     assert "# Sequential RAG Skill" in result.instructions
@@ -420,10 +419,10 @@ def test_agentic_stage_advertises_then_loads_only_selected_skill() -> None:
     assert "Prefer a single retrieval route." in prompt
     assert "Route each RAG request at runtime" in prompt
     assert "Arrange a sequential RAG workflow" in prompt
-    assert "Arrange parallel retrieval" in prompt
+    assert "Arrange parallel RAG" in prompt
     assert "# Sequential RAG Skill" not in prompt
     assert "# Conditional RAG Agentic Skill" not in prompt
-    assert "# RRFusion Workflow" not in prompt
+    assert "# Parallel RAG Workflow" not in prompt
 
 
 def test_agentic_stage_can_select_and_load_only_sim_rag() -> None:
@@ -455,12 +454,11 @@ def test_agentic_stage_can_select_and_load_only_sim_rag() -> None:
         "agentic-conditional-rag",
         "agentic-iterative-rag",
         "agentic-parallel-rag",
-        "agentic-rrfusion",
         "agentic-sequential-skill",
     )
     assert "# SIM-RAG-Inspired Iterative RAG" in result.instructions
     assert "# Sequential RAG Skill" not in result.instructions
-    assert "# RRFusion Workflow" not in result.instructions
+    assert "# Parallel RAG Workflow" not in result.instructions
     prompt = model.calls[0][0]
     assert "agentic-iterative-rag" in prompt
     assert "# SIM-RAG-Inspired Iterative RAG" not in prompt
@@ -476,7 +474,7 @@ def test_component_stage_advertises_then_loads_only_selected_skills() -> None:
         spec=agentic,
         instructions=(agentic.package_path / "SKILL.md").read_text(encoding="utf-8"),
         reason="Sequential retrieval is sufficient.",
-        advertised_skills=("agentic-rrfusion", "agentic-sequential-skill"),
+        advertised_skills=("agentic-parallel-rag", "agentic-sequential-skill"),
     )
     model = ScriptedModel(
         [
@@ -531,7 +529,7 @@ def test_component_stage_rejects_hyde_with_bm25_retriever() -> None:
             encoding="utf-8"
         ),
         reason="Sequential retrieval is sufficient.",
-        advertised_skills=("agentic-rrfusion", "agentic-sequential-skill"),
+        advertised_skills=("agentic-parallel-rag", "agentic-sequential-skill"),
     )
     model = ScriptedModel(
         [
@@ -581,8 +579,7 @@ def test_component_stage_accepts_conditional_hybrid_bindings() -> None:
             "agentic-conditional-rag",
             "agentic-iterative-rag",
             "agentic-parallel-rag",
-            "agentic-rrfusion",
-            "agentic-vanilla-rag",
+            "agentic-sequential-skill",
         ),
     )
     model = ScriptedModel(

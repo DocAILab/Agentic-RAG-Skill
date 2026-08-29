@@ -14,5 +14,9 @@ models/
 cache/
 experiments/**/cache/
 outputs/
+/data/HotpotQA/full/
+/data/HotpotQA/small/
+/data/HotpotQA/.cache/
+/docs/plans/
 /framework/settings.yaml
 .idea/
