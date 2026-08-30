@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "name": "triviaqa-demo-v1",
+  "source": {
+    "dataset": "TriviaQA",
+    "subset_file": "data/TriviaQA/outputs/wikipedia-dev_subset_100.json",
+    "subset_sha256": "6ff951542e14918ad816e4ad2f6c92d14a36f6ca2300f63f64ff92f1d25378af",
+    "subset_sampling": {
+      "method": "deterministic-sha256-prefix",
+      "seed": 20260828,
+      "max_query_samples": 100,
+      "total_valid_samples": 507,
+      "filtered": {
+        "dirty_record": 0,
+        "empty_question_id": 0,
+        "empty_query": 0,
+        "invalid_answer": 0,
+        "empty_answer": 0,
+        "no_documents": 7486,
+        "duplicate_id": 0
+      }
+    },
+    "license": "research-only (no unified official license)"
+  },
+  "sampling": {
+    "method": "weak-label-filtered-prefix",
+    "seed": 20260829,
+    "limit": 20
+  },
+  "counts": {
+    "documents": 35,
+    "test_examples": 20,
+    "weak_labels": 35
+  },
+  "files": {
+    "corpus.jsonl": {
+      "records": 35,
+      "bytes": 1423848,
+      "sha256": "2ce0f7bed5e2672a3561b9d2617f257a48a73b119ce3324ff15aa048e19d145f"
+    },
+    "test.jsonl": {
+      "records": 20,
+      "bytes": 13243,
+      "sha256": "b6a3a969a84514df97bc55259811c0d279e40b2f203e73ada1a8a1d316a54b64"
+    }
+  }
+}
