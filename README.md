@@ -59,7 +59,7 @@ python -B run_demo.py
 
 ```powershell
 python -B -m pytest -p no:cacheprovider
-python -B -m ruff check --no-cache framework tests experiments/hotpotqa/scripts run_demo.py
+python -B -m ruff check --no-cache framework tests data/TriviaQA experiments/hotpotqa/scripts experiments/triviaqa/scripts run_demo.py
 ```
 
 ## 目录
