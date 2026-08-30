@@ -412,8 +412,8 @@ def test_agentic_stage_advertises_then_loads_only_selected_skill() -> None:
         "agentic-conditional-rag",
         "agentic-iterative-rag",
         "agentic-parallel-rag",
-        "agentic-rrfusion",
         "agentic-sequential-skill",
+        "hybrid-agentic",
     )
     assert "# Sequential RAG Skill" in result.instructions
     prompt = model.calls[0][0]
@@ -455,8 +455,8 @@ def test_agentic_stage_can_select_and_load_only_sim_rag() -> None:
         "agentic-conditional-rag",
         "agentic-iterative-rag",
         "agentic-parallel-rag",
-        "agentic-rrfusion",
         "agentic-sequential-skill",
+        "hybrid-agentic",
     )
     assert "# SIM-RAG-Inspired Iterative RAG" in result.instructions
     assert "# Sequential RAG Skill" not in result.instructions
