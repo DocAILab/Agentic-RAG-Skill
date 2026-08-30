@@ -23,11 +23,11 @@ py -3.12 -m pip install -r requirements.txt
 
 ```powershell
 # 同时生成完整版本和 5,000 条小版本
-py -3.12 data/HotpotQA/加载脚本.py
+py -3.12 data/HotpotQA/prepare_hotpotqa.py
 
 # 只生成其中一个版本
-py -3.12 data/HotpotQA/加载脚本.py --version full
-py -3.12 data/HotpotQA/加载脚本.py --version small
+py -3.12 data/HotpotQA/prepare_hotpotqa.py --version full
+py -3.12 data/HotpotQA/prepare_hotpotqa.py --version small
 ```
 
 默认输出到 `data/HotpotQA/`。使用 `--output-root PATH` 可以更换本地位置。
@@ -35,7 +35,7 @@ py -3.12 data/HotpotQA/加载脚本.py --version small
 脚本重复执行时会核对 manifest、文件大小、记录数和 SHA-256。有效数据会直接复用；数据缺失、损坏或版本不一致时，脚本会拒绝覆盖。确认需要重建后使用：
 
 ```powershell
-py -3.12 data/HotpotQA/加载脚本.py --version all --force
+py -3.12 data/HotpotQA/prepare_hotpotqa.py --version all --force
 ```
 
 ## 本地目录
@@ -43,7 +43,7 @@ py -3.12 data/HotpotQA/加载脚本.py --version all --force
 ```text
 data/HotpotQA/
 |-- README.md
-|-- 加载脚本.py
+|-- prepare_hotpotqa.py
 |-- hotpotqa_data.py
 |-- _manifest.py
 |-- full/

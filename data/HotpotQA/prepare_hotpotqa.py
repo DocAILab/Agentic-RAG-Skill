@@ -1,4 +1,4 @@
-"""Prepare reproducible full and small local HotpotQA datasets."""
+"""Command-line interface for preparing reproducible HotpotQA datasets."""
 
 from __future__ import annotations
 

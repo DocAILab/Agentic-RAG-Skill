@@ -11,7 +11,7 @@ from datasets import Dataset
 
 
 PROJECT_ROOT = Path(__file__).parents[1]
-SCRIPT_PATH = PROJECT_ROOT / "data" / "HotpotQA" / "加载脚本.py"
+SCRIPT_PATH = PROJECT_ROOT / "data" / "HotpotQA" / "prepare_hotpotqa.py"
 
 
 def _load_module():
