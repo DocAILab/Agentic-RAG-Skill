@@ -23,7 +23,11 @@ from .sampling import iter_manifest_items, read_manifest
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run candidate-document retrieval evaluation")
-    parser.add_argument("--dataset", required=True, choices=("hotpotqa", "2wiki", "2wikimultihopqa", "triviaqa"))
+    parser.add_argument(
+        "--dataset",
+        required=True,
+        choices=("hotpotqa", "2wiki", "2wikimultihopqa", "triviaqa", "financebench"),
+    )
     parser.add_argument("--split", default="validation")
     parser.add_argument("--dataset-config")
     parser.add_argument("--retriever", required=True, choices=("bm25", "vector"))

@@ -6,7 +6,13 @@ from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from .adapters import AdapterError, adapt_hotpotqa, adapt_triviaqa, adapt_two_wiki
+from .adapters import (
+    AdapterError,
+    adapt_financebench,
+    adapt_hotpotqa,
+    adapt_triviaqa,
+    adapt_two_wiki,
+)
 from .adapters.common import sample_id
 from .schema import RetrievalExample
 
@@ -16,6 +22,7 @@ DATASETS = {
     "hotpotqa": ("hotpotqa/hotpot_qa", "distractor", adapt_hotpotqa),
     "2wikimultihopqa": ("xanhho/2WikiMultihopQA", None, adapt_two_wiki),
     "triviaqa": ("mandarjoshi/trivia_qa", "rc", adapt_triviaqa),
+    "financebench": ("PatronusAI/financebench", None, adapt_financebench),
 }
 TWO_WIKI_FILES = {
     split: f"https://huggingface.co/datasets/xanhho/2WikiMultihopQA/resolve/main/{split}.parquet"
@@ -42,7 +49,12 @@ def iter_huggingface_items(
     dataset_key = _dataset_key(dataset)
     path, default_config, adapter = DATASETS[dataset_key]
     loader = load_dataset_fn or _load_dataset
-    resolved_split = "dev" if dataset_key == "2wikimultihopqa" and split == "validation" else split
+    if dataset_key == "2wikimultihopqa" and split == "validation":
+        resolved_split = "dev"
+    elif dataset_key == "financebench" and split != "train":
+        resolved_split = "train"
+    else:
+        resolved_split = split
     rows = _load_rows(
         loader,
         dataset_key=dataset_key,
