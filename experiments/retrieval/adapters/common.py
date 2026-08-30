@@ -19,7 +19,7 @@ class AdapterError(ValueError):
 
 
 def sample_id(row: Mapping[str, Any]) -> str:
-    for key in ("id", "_id", "question_id"):
+    for key in ("id", "_id", "question_id", "financebench_id"):
         value = row.get(key)
         if value is not None and str(value).strip():
             return str(value).strip()

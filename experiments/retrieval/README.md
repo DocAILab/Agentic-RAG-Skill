@@ -36,7 +36,7 @@ python -m experiments.retrieval.run_benchmark `
   --batch-size 8
 ```
 
-数据集名称还支持 `2wiki` 和 `triviaqa`。2Wiki 的 `validation` 自动映射到官方 `dev` split。可用 `--limit 10` 先做烟雾测试；显存不足时减小 `--batch-size` 或使用 `--device cpu`。
+数据集名称还支持 `2wiki`、`triviaqa` 和 `financebench`。2Wiki 的 `validation` 自动映射到官方 `dev` split；FinanceBench 的公开数据当前按 `train` 读入。可用 `--limit 10` 先做烟雾测试；显存不足时减小 `--batch-size` 或使用 `--device cpu`。
 
 真实 BGE 小样本集成测试默认跳过，显式启用方式：
 

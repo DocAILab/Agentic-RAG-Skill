@@ -6,6 +6,7 @@ import pytest
 
 from experiments.retrieval.adapters import (
     AdapterError,
+    adapt_financebench,
     adapt_hotpotqa,
     adapt_triviaqa,
     adapt_two_wiki,
@@ -83,6 +84,39 @@ def test_triviaqa_builds_weak_labels_from_answer_aliases() -> None:
     assert example.label_type == "weak_answer_alias"
     assert example.relevant_document_ids == ("entity:0",)
     assert example.metadata["weak_labels"] is True
+
+
+def test_financebench_adapts_evidence_documents_and_metadata() -> None:
+    example = adapt_financebench(
+        {
+            "financebench_id": "fb-1",
+            "company": "Acme",
+            "doc_name": "ACME_2023_10K",
+            "question_type": "domain-relevant",
+            "question": "What does Acme do?",
+            "answer": "Widgets",
+            "evidence": [
+                {
+                    "doc_name": "ACME_2023_10K",
+                    "evidence_page_num": 12,
+                    "evidence_text": "Acme makes widgets.",
+                    "evidence_text_full_page": "Acme makes widgets.",
+                }
+            ],
+        }
+    )
+
+    assert example.id == "fb-1"
+    assert example.query == "What does Acme do?"
+    assert [document.id for document in example.documents] == [
+        "ACME_2023_10K#p12"
+    ]
+    assert example.documents[0].title == "ACME_2023_10K"
+    assert example.documents[0].text == "Acme makes widgets."
+    assert example.relevant_document_ids == ("ACME_2023_10K#p12",)
+    assert example.label_type == "evidence"
+    assert example.metadata["dataset"] == "financebench"
+    assert example.metadata["company"] == "Acme"
 
 
 def test_unlabelled_examples_remain_unlabelled() -> None:
