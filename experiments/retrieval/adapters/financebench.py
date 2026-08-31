@@ -1,4 +1,4 @@
-"""FinanceBench candidate-document adapter."""
+"""Normalize FinanceBench gold evidence pages for corpus construction."""
 
 from __future__ import annotations
 

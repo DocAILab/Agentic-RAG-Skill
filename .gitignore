@@ -17,6 +17,9 @@ outputs/
 /data/HotpotQA/full/
 /data/HotpotQA/small/
 /data/HotpotQA/.cache/
+/data/FinanceBench/public/
+/data/FinanceBench/small/
+/data/FinanceBench/.cache/
 /docs/plans/
 /framework/settings.yaml
 .idea/
