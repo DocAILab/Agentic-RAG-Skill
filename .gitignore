@@ -20,6 +20,10 @@ outputs/
 /data/FinanceBench/public/
 /data/FinanceBench/small/
 /data/FinanceBench/.cache/
+/data/2WikiMultihopQA/demo/corpus.jsonl
+/data/2WikiMultihopQA/demo/test.jsonl
+/data/2WikiMultihopQA/demo/manifest.json
+/data/2WikiMultihopQA/.cache/
 /docs/plans/
 /framework/settings.yaml
 .idea/

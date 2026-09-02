@@ -35,10 +35,10 @@ data/raw/triviaqa/
 
 ```powershell
 # 默认生成 100 和 800 两档子集
-python -B "data/TriviaQA/加载脚本.py"
+python -B "data/TriviaQA/prepare_triviaqa.py"
 
 # 指定其他问答文件与多档规模
-python -B "data/TriviaQA/加载脚本.py" --source data/raw/triviaqa/qa/web-dev.json --max-query-samples 100 800 5000
+python -B "data/TriviaQA/prepare_triviaqa.py" --source data/raw/triviaqa/qa/web-dev.json --max-query-samples 100 800 5000
 ```
 
 默认输出到 `data/TriviaQA/outputs/`。使用 `--output PATH` 更换输出目录，`--seed` 更换抽样种子。
@@ -47,7 +47,7 @@ python -B "data/TriviaQA/加载脚本.py" --source data/raw/triviaqa/qa/web-dev.
 复用；数据缺失、损坏或参数不一致时脚本拒绝覆盖。确认需要重建后使用：
 
 ```powershell
-python -B "data/TriviaQA/加载脚本.py" --force
+python -B "data/TriviaQA/prepare_triviaqa.py" --force
 ```
 
 ## 本地目录
@@ -55,7 +55,7 @@ python -B "data/TriviaQA/加载脚本.py" --force
 ```text
 data/TriviaQA/
 |-- README.md
-|-- 加载脚本.py
+|-- prepare_triviaqa.py
 |-- triviaqa_data.py
 |-- _manifest.py
 `-- outputs/                  # git 忽略，仅本地
