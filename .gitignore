@@ -17,6 +17,9 @@ outputs/
 /data/HotpotQA/full/
 /data/HotpotQA/small/
 /data/HotpotQA/.cache/
+/data/FinanceBench/public/
+/data/FinanceBench/small/
+/data/FinanceBench/.cache/
 /data/2WikiMultihopQA/demo/corpus.jsonl
 /data/2WikiMultihopQA/demo/test.jsonl
 /data/2WikiMultihopQA/demo/manifest.json

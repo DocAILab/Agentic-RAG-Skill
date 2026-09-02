@@ -2,6 +2,9 @@
 
 当前只接入 Hugging Face 上可公开获取的 FinanceBench 样本，并为以后补全量版本预留目录位。
 
+公开数据固定到 Hugging Face revision
+`e04404e3a97f69f79c14d42f24981a1c9c3bcd18`，避免上游 `main` 更新导致本地副本漂移。
+
 ## 版本
 
 - `public/`：当前公开数据的完整副本
@@ -29,6 +32,9 @@ data/FinanceBench/
 python data/FinanceBench/prepare_financebench.py --version all
 python data/FinanceBench/prepare_financebench.py --version small --small-limit 10
 ```
+
+已存在版本的 revision 或抽样参数不一致时，脚本会拒绝复用。确认需要替换后显式增加
+`--force`。
 
 `small` 的抽样规则是：
 
