@@ -23,7 +23,7 @@ def _load_cli(monkeypatch):
     sys.modules.pop("triviaqa_data", None)
     sys.modules.pop("_manifest", None)
     monkeypatch.syspath_prepend(str(data_dir))
-    script_path = data_dir / "加载脚本.py"
+    script_path = data_dir / "prepare_triviaqa.py"
     spec = importlib.util.spec_from_file_location("triviaqa_cli", script_path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)

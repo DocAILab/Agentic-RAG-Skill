@@ -12,7 +12,7 @@
 ```text
 data/FinanceBench/
 |-- README.md
-|-- 加载脚本.py
+|-- prepare_financebench.py
 |-- financebench_data.py
 |-- _manifest.py
 |-- public/
@@ -26,8 +26,8 @@ data/FinanceBench/
 ## 生成
 
 ```powershell
-python data/FinanceBench/加载脚本.py --version all
-python data/FinanceBench/加载脚本.py --version small --small-limit 10
+python data/FinanceBench/prepare_financebench.py --version all
+python data/FinanceBench/prepare_financebench.py --version small --small-limit 10
 ```
 
 `small` 的抽样规则是：
