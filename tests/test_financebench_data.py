@@ -5,6 +5,8 @@ import json
 import sys
 from pathlib import Path
 
+import pytest
+
 
 def _load_module(monkeypatch):
     data_dir = Path(__file__).resolve().parents[1] / "data" / "FinanceBench"
@@ -105,3 +107,50 @@ def test_prepare_versions_materializes_public_and_small_deterministically(
     assert [row["financebench_id"] for row in small_rows] == [
         row["financebench_id"] for row in reverse_small_rows
     ]
+
+
+def test_changed_small_size_requires_force(tmp_path, monkeypatch) -> None:
+    module = _load_module(monkeypatch)
+    rows = [
+        _row(f"fb-{index}", "ACME_2023_10K", index, str(index))
+        for index in range(4)
+    ]
+
+    def loader(*args, **kwargs):
+        return iter(rows)
+
+    module.prepare_versions("small", tmp_path, load_dataset_fn=loader, small_size=2)
+
+    with pytest.raises(module.DatasetStateError, match="--force"):
+        module.prepare_versions("small", tmp_path, load_dataset_fn=loader, small_size=3)
+
+    manifest = module.prepare_versions(
+        "small",
+        tmp_path,
+        load_dataset_fn=loader,
+        small_size=3,
+        force=True,
+    )["small"]
+    assert manifest["source"]["sampling"]["size"] == 3
+    assert manifest["counts"]["examples"] == 3
+
+
+@pytest.mark.parametrize("size", [0, -1])
+def test_small_size_must_be_positive(tmp_path, monkeypatch, size) -> None:
+    module = _load_module(monkeypatch)
+
+    with pytest.raises(ValueError, match="positive"):
+        module.prepare_versions("small", tmp_path, small_size=size)
+
+
+def test_small_size_cannot_exceed_available_rows(tmp_path, monkeypatch) -> None:
+    module = _load_module(monkeypatch)
+    rows = [_row("fb-1", "ACME_2023_10K", 1, "one")]
+
+    with pytest.raises(ValueError, match="exceeds"):
+        module.prepare_versions(
+            "small",
+            tmp_path,
+            load_dataset_fn=lambda *args, **kwargs: iter(rows),
+            small_size=2,
+        )

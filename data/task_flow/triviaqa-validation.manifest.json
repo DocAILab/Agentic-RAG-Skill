@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "dataset": "triviaqa",
+  "dataset_config": null,
+  "split": "validation",
+  "examples": 1,
+  "invalid_before_completion": 0,
+  "source_indices": [
+    0
+  ],
+  "sample_ids": [
+    "tc_2"
+  ],
+  "output": "triviaqa-validation.jsonl",
+  "sha256": "5226b599b8b5f910d703e590ac3a6548df1c245e0357f5c968b84b206baac3a0"
+}

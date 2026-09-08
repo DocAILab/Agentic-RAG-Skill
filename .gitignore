@@ -17,6 +17,16 @@ outputs/
 /data/HotpotQA/full/
 /data/HotpotQA/small/
 /data/HotpotQA/.cache/
+/data/FinanceBench/public/
+/data/FinanceBench/small/
+/data/FinanceBench/.cache/
+/data/2WikiMultihopQA/demo/corpus.jsonl
+/data/2WikiMultihopQA/demo/test.jsonl
+/data/2WikiMultihopQA/demo/manifest.json
+/data/2WikiMultihopQA/.cache/
 /docs/plans/
 /framework/settings.yaml
+/self_optimization/settings.yaml
+/self_optimization/task_flow.yaml
+/self_optimization/runs/
 .idea/

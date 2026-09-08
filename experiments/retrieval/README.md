@@ -36,7 +36,12 @@ python -m experiments.retrieval.run_benchmark `
   --batch-size 8
 ```
 
-数据集名称还支持 `2wiki`、`triviaqa` 和 `financebench`。2Wiki 的 `validation` 自动映射到官方 `dev` split；FinanceBench 的公开数据当前按 `train` 读入。可用 `--limit 10` 先做烟雾测试；显存不足时减小 `--batch-size` 或使用 `--device cpu`。
+数据集名称还支持 `2wiki`、`triviaqa` 和 `financebench`。2Wiki 的
+`validation` 自动映射到官方 `dev` split。FinanceBench 默认读取
+`experiments/financebench/data/demo/` 的共享证据页 corpus，但每题只使用固定 10 个候选
+页面，逻辑 split 为 `test`；先按该目录 README 构建 demo，使用其他位置时传
+`--data-dir`。可用 `--limit 10` 先做烟雾测试；显存不足时减小 `--batch-size` 或使用
+`--device cpu`。
 
 真实 BGE 小样本集成测试默认跳过，显式启用方式：
 
@@ -54,4 +59,8 @@ python -m pytest tests/test_retrieval_bge_integration.py
 - `checkpoint.json`：最近进度与运行参数；
 - `summary.json`：计数和按标签类型分组的宏平均。
 
-使用相同参数重新执行时会读取 `results.jsonl` 并跳过已经完成的样本。参数不一致时会拒绝复用旧结果，防止混合实验。HotpotQA 和 2Wiki 使用 `supporting_facts` 强标签；TriviaQA 使用 `weak_answer_alias` 弱标签，二者不会合并汇总。无公开 gold 的样本只保存检索结果，`metrics` 为 `null`。
+使用相同参数重新执行时会读取 `results.jsonl` 并跳过已经完成的样本。参数不一致时会
+拒绝复用旧结果，防止混合实验。FinanceBench 的运行身份额外记录 demo manifest 哈希，
+避免 corpus 更新后误续跑旧结果。HotpotQA 和 2Wiki 使用 `supporting_facts` 强标签；
+FinanceBench 使用 `evidence_page` 强标签；TriviaQA 使用 `weak_answer_alias` 弱标签，
+不同标签不会合并汇总。无公开 gold 的样本只保存检索结果，`metrics` 为 `null`。

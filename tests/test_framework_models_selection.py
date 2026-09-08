@@ -150,6 +150,30 @@ def test_openai_compatible_client_uses_8192_only_when_limit_is_omitted() -> None
     assert transport.calls[1][2]["max_tokens"] == 64
 
 
+def test_openai_compatible_client_adds_protected_extra_body() -> None:
+    """验证兼容服务可接收 Qwen 等模型专用参数且不能覆盖核心请求字段。"""
+    transport = RecordingTransport(
+        {"choices": [{"message": {"content": "answer"}}]}
+    )
+    client = OpenAICompatibleModelClient(
+        model="qwen3-8b",
+        api_key="test-secret",
+        base_url="https://example.test/v1",
+        extra_body={"enable_thinking": False},
+        transport=transport,
+    )
+
+    assert client.generate("question") == "answer"
+    assert transport.calls[0][2]["enable_thinking"] is False
+
+    with pytest.raises(ValueError, match="cannot override request keys"):
+        OpenAICompatibleModelClient(
+            model="qwen3-8b",
+            extra_body={"max_tokens": 1},
+            transport=transport,
+        )
+
+
 def test_openai_client_retries_transient_upstream_errors() -> None:
     """验证 524 等临时上游错误会按配置重试并最终返回答案。"""
     transport = FlakyTransport(

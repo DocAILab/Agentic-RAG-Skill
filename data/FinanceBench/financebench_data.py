@@ -8,10 +8,16 @@ from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Any
 
-from _manifest import existing_manifest, file_record, reset_target, write_manifest
+from _manifest import (
+    DatasetStateError,
+    existing_manifest,
+    file_record,
+    reset_target,
+    write_manifest,
+)
 
 REPOSITORY = "PatronusAI/financebench"
-REVISION = "main"
+REVISION = "e04404e3a97f69f79c14d42f24981a1c9c3bcd18"
 DEFAULT_SPLIT = "train"
 PUBLIC_NAME = "financebench-public-v1"
 SMALL_NAME = "financebench-small-v1"
@@ -41,8 +47,8 @@ def prepare_versions(
 ) -> dict[str, dict]:
     if version not in {"public", "small", "all"}:
         raise ValueError(f"Unsupported FinanceBench version: {version}")
-    if small_size < 0:
-        raise ValueError("small_size must be non-negative")
+    if small_size < 1:
+        raise ValueError("small_size must be positive")
 
     requested = ("public", "small") if version == "all" else (version,)
     results: dict[str, dict] = {}
@@ -50,17 +56,7 @@ def prepare_versions(
     if not force:
         for name in requested:
             target = Path(output_root) / name
-            expected = {
-                "repository": REPOSITORY,
-                "revision": REVISION,
-                "split": DEFAULT_SPLIT,
-            }
-            if name == "small":
-                expected["sampling"] = {
-                    "method": "sha256-id-ranking",
-                    "salt": SMALL_SALT,
-                    "size": small_size,
-                }
+            expected = _source(name, small_size=small_size)
             existing = (
                 existing_manifest(
                     target,
@@ -70,7 +66,12 @@ def prepare_versions(
                 if target.exists()
                 else None
             )
-            if existing is not None and existing.get("source") == expected:
+            if existing is not None:
+                if existing.get("source") != expected:
+                    raise DatasetStateError(
+                        f"Existing {name} dataset uses different source or sampling "
+                        "settings; rerun with --force"
+                    )
                 results[name] = existing
     if len(results) == len(requested):
         return results
@@ -83,11 +84,7 @@ def prepare_versions(
             output_root,
             "public",
             force,
-            source={
-                "repository": REPOSITORY,
-                "revision": REVISION,
-                "split": DEFAULT_SPLIT,
-            },
+            source=_source("public", small_size=small_size),
         )
     if version in {"small", "all"}:
         selected = _stable_sample(rows, small_size)
@@ -103,7 +100,7 @@ def prepare_versions(
                 "sampling": {
                     "method": "sha256-id-ranking",
                     "salt": SMALL_SALT,
-                    "size": len(selected),
+                    "size": small_size,
                 },
             },
         )
@@ -127,6 +124,11 @@ def _materialize(
         REVISION,
     )
     if existing is not None:
+        if existing.get("source") != source:
+            raise DatasetStateError(
+                f"Existing {name} dataset uses different source or sampling "
+                "settings; rerun with --force"
+            )
         return existing
     target.mkdir(parents=True, exist_ok=False)
     raw_path = target / f"{DEFAULT_SPLIT}.jsonl"
@@ -150,8 +152,8 @@ def _stable_sample(
     rows: Iterable[Mapping[str, Any]],
     limit: int,
 ) -> list[dict[str, Any]]:
-    if limit < 0:
-        raise ValueError("small_size must be non-negative")
+    if limit < 1:
+        raise ValueError("small_size must be positive")
     ranked = sorted(
         enumerate(rows),
         key=lambda item: (
@@ -161,8 +163,26 @@ def _stable_sample(
             _row_id(item[1], item[0]),
         ),
     )
-    actual_size = min(limit, len(ranked))
-    return [dict(row) for _, row in ranked[:actual_size]]
+    if len(ranked) < limit:
+        raise ValueError(
+            f"small_size {limit} exceeds the {len(ranked)} available examples"
+        )
+    return [dict(row) for _, row in ranked[:limit]]
+
+
+def _source(name: str, *, small_size: int) -> dict[str, Any]:
+    source: dict[str, Any] = {
+        "repository": REPOSITORY,
+        "revision": REVISION,
+        "split": DEFAULT_SPLIT,
+    }
+    if name == "small":
+        source["sampling"] = {
+            "method": "sha256-id-ranking",
+            "salt": SMALL_SALT,
+            "size": small_size,
+        }
+    return source
 
 
 def _row_id(row: Mapping[str, Any], index: int) -> str:
