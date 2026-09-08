@@ -19,8 +19,7 @@ class AdapterError(ValueError):
 
 
 def sample_id(row: Mapping[str, Any]) -> str:
-    """按常见字段顺序读取稳定样本 ID。"""
-    for key in ("id", "_id", "question_id"):
+    for key in ("id", "_id", "question_id", "financebench_id"):
         value = row.get(key)
         if value is not None and str(value).strip():
             return str(value).strip()

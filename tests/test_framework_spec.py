@@ -85,6 +85,7 @@ def test_sample_repository_has_three_strict_skill_levels() -> None:
     assert {"manage-rag-default"} <= packages_by_kind[SkillKind.MANAGE]
     assert {
         "agentic-conditional-rag",
+        "agentic-hybrid-rag",
         "agentic-iterative-rag",
         "agentic-sequential-skill",
         "agentic-parallel-rag",
@@ -678,9 +679,9 @@ def test_conditional_hybrid_route_rejects_invalid_rank_constant(
         )
 
 
-def test_rrfusion_workflow_calls_two_retrievers_and_fuses_results() -> None:
-    """验证 RRFusion 调用两路检索器并正确融合重复结果。"""
-    workflow = load_runtime_callable(_specs_by_name()["agentic-rrfusion"])
+def test_parallel_workflow_calls_two_retrievers_and_fuses_results() -> None:
+    """验证 Parallel RAG 调用两路检索器并正确融合重复结果。"""
+    workflow = load_runtime_callable(_specs_by_name()["agentic-parallel-rag"])
     components = FakeComponents(
         {
             "retrievers": [

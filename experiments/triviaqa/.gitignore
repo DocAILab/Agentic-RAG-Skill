@@ -1,0 +1,3 @@
+# Keep the result directory but ignore generated experiment outputs.
+outputs/*
+!outputs/.gitkeep

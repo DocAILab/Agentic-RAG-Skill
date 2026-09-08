@@ -1,4 +1,4 @@
-"""三数据集共享的检索样本结构。"""
+"""检索基准共享的样本结构。"""
 
 from __future__ import annotations
 
