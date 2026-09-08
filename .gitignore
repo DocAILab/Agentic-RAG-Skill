@@ -15,4 +15,7 @@ cache/
 experiments/**/cache/
 outputs/
 /framework/settings.yaml
+/self_optimization/settings.yaml
+/self_optimization/task_flow.yaml
+/self_optimization/runs/
 .idea/

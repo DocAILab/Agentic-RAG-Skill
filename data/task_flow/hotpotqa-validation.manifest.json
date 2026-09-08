@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "dataset": "hotpotqa",
+  "dataset_config": null,
+  "split": "validation",
+  "examples": 1,
+  "invalid_before_completion": 0,
+  "source_indices": [
+    0
+  ],
+  "sample_ids": [
+    "5a8b57f25542995d1e6f1371"
+  ],
+  "output": "hotpotqa-validation.jsonl",
+  "sha256": "0022c60428257f7853fde7dd3be961e491d76e5e154220ef3735012011bc54e5"
+}

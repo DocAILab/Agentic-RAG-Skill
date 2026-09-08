@@ -72,6 +72,7 @@ class OpenAICompatibleModelClient:
     max_retries: int = 2
     retry_backoff_seconds: float = 2.0
     extra_headers: Mapping[str, str] = field(default_factory=dict)
+    extra_body: Mapping[str, Any] = field(default_factory=dict, repr=False)
     transport: JsonTransport | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
@@ -81,6 +82,19 @@ class OpenAICompatibleModelClient:
         if self.default_max_tokens <= 0 or self.timeout_seconds <= 0:
             raise ValueError("token and timeout limits must be positive")
         _validate_retry_options(self.max_retries, self.retry_backoff_seconds)
+        if not isinstance(self.extra_body, Mapping):
+            raise ValueError("extra_body must be a mapping")
+        reserved_body_keys = {
+            "model",
+            "messages",
+            "temperature",
+            "max_tokens",
+        }
+        overlap = set(self.extra_body) & reserved_body_keys
+        if overlap:
+            raise ValueError(
+                f"extra_body cannot override request keys: {sorted(overlap)}"
+            )
         if self.transport is None:
             self.transport = _post_json
 
@@ -104,6 +118,7 @@ class OpenAICompatibleModelClient:
             "max_tokens": (
                 max_tokens if max_tokens is not None else self.default_max_tokens
             ),
+            **self.extra_body,
         }
         headers = {"content-type": "application/json", **self.extra_headers}
         if self.api_key:

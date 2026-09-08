@@ -22,6 +22,7 @@ def test_hotpotqa_adapts_column_oriented_context_and_gold_titles() -> None:
                 "sentences": [["Alpha text."], ["Beta one.", "Beta two."]],
             },
             "supporting_facts": {"title": ["Alpha", "Beta"], "sent_id": [0, 1]},
+            "answer": "Alpha",
         }
     )
 
@@ -30,6 +31,7 @@ def test_hotpotqa_adapts_column_oriented_context_and_gold_titles() -> None:
     assert example.documents[1].text == "Beta one. Beta two."
     assert example.relevant_document_ids == ("Alpha", "Beta")
     assert example.label_type == "supporting_facts"
+    assert example.gold_answers == ("Alpha",)
 
 
 def test_two_wiki_adapts_record_oriented_context() -> None:
@@ -42,12 +44,14 @@ def test_two_wiki_adapts_record_oriented_context() -> None:
                 {"title": "Second", "content": ["Two."]},
             ],
             "supporting_facts": [{"title": "Second", "sent_id": 0}],
+            "answer": "Second place",
         }
     )
 
     assert example.id == "wiki-1"
     assert example.relevant_document_ids == ("Second",)
     assert example.documents[0].text == "One."
+    assert example.gold_answers == ("Second place",)
 
 
 def test_two_wiki_adapts_json_strings_from_official_parquet() -> None:
@@ -83,6 +87,7 @@ def test_triviaqa_builds_weak_labels_from_answer_aliases() -> None:
     assert example.label_type == "weak_answer_alias"
     assert example.relevant_document_ids == ("entity:0",)
     assert example.metadata["weak_labels"] is True
+    assert example.gold_answers == ("Paris", "PARIS")
 
 
 def test_unlabelled_examples_remain_unlabelled() -> None:
