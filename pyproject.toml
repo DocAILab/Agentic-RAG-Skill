@@ -11,10 +11,13 @@ requires-python = ">=3.11"
 dependencies = [
     "numpy>=1.26",
     "PyYAML>=6.0",
+    "ruff>=0.15",
 ]
 
 [project.scripts]
 ragskill-demo = "framework.demo:main"
+ragskill-self-optimize = "self_optimization.runner:main"
+ragskill-task-flow = "self_optimization.task_flow:main"
 
 [project.optional-dependencies]
 embedding = [
@@ -41,7 +44,7 @@ test = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["framework*"]
+include = ["framework*", "self_optimization*"]
 
 [tool.setuptools.package-data]
 framework = [
@@ -51,6 +54,10 @@ framework = [
     "skills/*/*/ragskill.yaml",
     "skills/*/*/agents/*.yaml",
     "skills/*/*/scripts/*.py",
+]
+self_optimization = [
+    "settings.example.yaml",
+    "task_flow.example.yaml",
 ]
 
 [tool.pytest.ini_options]

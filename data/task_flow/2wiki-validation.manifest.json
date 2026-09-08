@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "dataset": "2wiki",
+  "dataset_config": null,
+  "split": "validation",
+  "examples": 1,
+  "invalid_before_completion": 0,
+  "source_indices": [
+    0
+  ],
+  "sample_ids": [
+    "8813f87c0bdd11eba7f7acde48001122"
+  ],
+  "output": "2wiki-validation.jsonl",
+  "sha256": "2824644c379c9e26eb1b5703425ef93c17f8027185c83168440ed9d82415e2a1"
+}

@@ -1,0 +1,60 @@
+# Skill 仓库自优化配置模板。复制为 settings.yaml 后填写本地 Qwen 服务信息。
+# settings.yaml、runs/ 和其中的 Skill 工作副本均被 .gitignore 排除。
+schema_version: 1
+
+# 现有 RAG framework 配置。Executor、Embedding、HotpotQA 数据和向量缓存继续使用该配置。
+# 相对路径以当前 self_optimization/ 目录为基准。
+framework_config: ../framework/settings.yaml
+
+workspace:
+  # 每次运行会在此目录下新建唯一子目录，并复制 framework/skills 到 <run>/skills。
+  # 优化模型只修改这个副本，绝不会把修改写回 framework/skills。
+  runs_root: runs
+  # null 时自动使用 UTC 时间和随机后缀。显式填写时目录必须不存在，防止覆盖旧实验。
+  run_id: null
+
+optimizer:
+  # VVEAI、本地 vLLM、SGLang、Ollama OpenAI 兼容服务均使用 openai-compatible。
+  provider: openai-compatible
+  # VVEAI 的精确模型 ID 已通过 /v1/models 验证。确定使用 Qwen3.5 后只需替换本项。
+  model: qwen3-8b
+  # 客户端会继续追加 chat/completions，因此必须保留 /v1。
+  base_url: https://api.vveai.com/v1
+  # 本地服务可保持两项均为 null。远程服务可在本地 settings.yaml 直写 api_key，
+  # 或只设置 api_key_env 并从环境变量读取；两者不能同时配置。
+  api_key: null
+  api_key_env: VVEAI_API_KEY
+  # 单次优化可能输出完整 SKILL.md 或 Python 文件，因此超时应明显高于普通分类请求。
+  timeout_seconds: 600
+  extra_headers: {}
+  options:
+    # 模型客户端默认输出预算至少 8192；每轮实际调用预算还受 optimization.max_tokens 控制。
+    default_max_tokens: 8192
+    max_retries: 2
+    retry_backoff_seconds: 2.0
+    # VVEAI 要求 qwen3-8b 的非流式 Chat Completions 显式关闭 thinking。
+    extra_body:
+      enable_thinking: false
+
+optimization:
+  # 每条样本完成执行和评估后调用一次优化模型。null 表示处理 framework 测试集中的全部样本。
+  max_examples: 10
+  # 优化需要一定探索性，但过高会降低 JSON 和代码稳定性。
+  temperature: 0.1
+  # 优化模型单次响应预算；必须足够返回一个文件的完整替换内容。
+  max_tokens: 8192
+  # 下面四项共同限制发送给优化模型的上下文，避免语料或 Skill 脚本导致 prompt 过大。
+  max_prompt_chars: 120000
+  max_skill_file_chars: 24000
+  max_process_chars: 30000
+  max_documents: 10
+  document_excerpt_chars: 1200
+  # 一轮只能选择一个 Skill，并最多完整替换这里指定数量的文件。
+  max_edits: 3
+  # 模型返回不存在的路径、无实质变化或非法 JSON 时，携带明确错误反馈自动纠正的总尝试次数。
+  # HTTP 失败仍由 optimizer.options.max_retries 处理，两者不是同一层重试。
+  max_proposal_attempts: 3
+  # false 时只能修改已存在的 SKILL.md、scripts/* 或 references/* 文本文件。
+  allow_new_files: false
+  # true 时，Qwen 超时、非法 JSON 或结构校验失败会记录为 rejected 并继续下一条样本。
+  continue_on_optimization_error: true
