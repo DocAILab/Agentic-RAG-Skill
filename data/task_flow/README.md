@@ -15,3 +15,33 @@ python -B -m self_optimization.build_task_data --dataset hotpotqa --split valida
 python -B -m self_optimization.build_task_data --dataset 2wiki --split validation --examples 1 --output data/task_flow/2wiki-validation.jsonl
 python -B -m self_optimization.build_task_data --dataset triviaqa --split validation --examples 1 --output data/task_flow/triviaqa-validation.jsonl
 ```
+
+## 多 Task 切分
+
+当需要把一个大分片切成多个互斥、可顺序自优化的小 Task 时，使用
+`self_optimization/split_task_data.py`。它对全量有效样本按
+`sha256("{dataset}:{sample_id}")` 确定性排序（与 `experiments/retrieval`
+的抽样 manifest 规则一致），再按 K 切成互不重叠的 task 文件；每个 task
+和整档 suite 都带可校验 manifest。
+
+```powershell
+python -B -m self_optimization.split_task_data `
+  --dataset triviaqa --split validation --task-size 200 20
+```
+
+默认输出到 `data/task_flow/triviaqa-validation/`（本地生成，git 忽略）：
+
+```text
+triviaqa-validation/
+|-- universe.manifest.json        # 全量有效样本清单（哈希序）
+|-- records.jsonl                 # 规范化全量记录缓存
+|-- k200/task-*.jsonl ...         # 200 题一档，88 个 Task
+`-- k20/task-*.jsonl ...          # 20 题一档，873 个 Task
+```
+
+指定 `--task-size 200` 只生成一档；加 `--write-task-flow` 会为每档写出
+`self_optimization/task_flow.triviaqa-k*.yaml`（git 忽略），可直接复制为
+本地 `task_flow.yaml` 使用。默认只收录带答案与弱标签的有效样本；
+rc validation 共 17,944 行（wiki/web 证据变体，唯一 QuestionId 约 9,960），
+默认过滤剔除 112 行无弱标签样本与 380 行完全重复记录后得到 17,452 个有效
+样本行；`--no-require-labels` 可放宽该过滤。
