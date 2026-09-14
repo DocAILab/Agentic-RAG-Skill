@@ -1,0 +1,38 @@
+# 2WikiMultihopQA reasoning-type task flow for Prompt-only Skill optimization.
+# Relative paths are resolved from this self_optimization/ directory.
+schema_version: 1
+
+self_optimization_config: settings.yaml
+
+workflow:
+  max_process_examples: 5
+  # Each task evaluates one official reasoning type. The same working Skill copy
+  # is reused and may be optimized once after every task.
+  tasks:
+    - name: 2wiki-compositional-validation
+      dataset: 2wikimultihopqa
+      data_path: ../data/task_flow/2wiki-compositional-validation.jsonl
+      max_examples: 10
+      request:
+        top_k: 10
+
+    - name: 2wiki-inference-validation
+      dataset: 2wikimultihopqa
+      data_path: ../data/task_flow/2wiki-inference-validation.jsonl
+      max_examples: 10
+      request:
+        top_k: 10
+
+    - name: 2wiki-comparison-validation
+      dataset: 2wikimultihopqa
+      data_path: ../data/task_flow/2wiki-comparison-validation.jsonl
+      max_examples: 10
+      request:
+        top_k: 10
+
+    - name: 2wiki-bridge-comparison-validation
+      dataset: 2wikimultihopqa
+      data_path: ../data/task_flow/2wiki-bridge-comparison-validation.jsonl
+      max_examples: 10
+      request:
+        top_k: 10
