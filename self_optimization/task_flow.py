@@ -283,12 +283,35 @@ def run_task_workflow(
                 max_file_chars=base.optimization.max_skill_file_chars,
                 allow_new_files=base.optimization.allow_new_files,
             )
+            verification = None
+            if base.optimization.verify_revision_execution:
+                try:
+                    verification = _verify_revision_execution(
+                        example=task_examples[0],
+                        task=task,
+                        selected_skill=proposal.selected_skill,
+                        baseline_metrics=task_metrics[0].to_dict(),
+                        framework_config=framework_config,
+                        workspace=workspace,
+                        executor_model=executor_model,
+                        runtime_context=runtime_context,
+                        generation_evaluator=generation_evaluator,
+                    )
+                except Exception as exc:
+                    reason = (
+                        "Post-revision execution validation failed: "
+                        f"{_safe_error_message(exc)}"
+                    )
+                    workspace.rollback_revision(revision, reason=reason)
+                    raise RevisionRejected(reason) from exc
             optimization_record = {
                 "status": "accepted",
                 "selected_skill": proposal.selected_skill,
                 "rationale": proposal.rationale,
                 "revision": revision.to_dict(),
             }
+            if verification is not None:
+                optimization_record["verification"] = verification
         except OptimizationNoChange as exc:
             optimization_record = {
                 "status": "skipped",
@@ -387,6 +410,162 @@ def run_task_workflow(
         print("Report:", report_path)
         print("Log:", event_log.path)
     return report
+
+
+def _verify_revision_execution(
+    *,
+    example: TaskExample,
+    task: RAGTaskConfig,
+    selected_skill: str,
+    baseline_metrics: Mapping[str, Any],
+    framework_config: Any,
+    workspace: SkillWorkspace,
+    executor_model: ModelClient,
+    runtime_context: RuntimeComponentContext,
+    generation_evaluator: GenerationEvaluator | None,
+) -> dict[str, Any]:
+    """在接受 revision 前重跑真实样本，并要求其负责阶段的指标确有提升。"""
+    request = {
+        **framework_config.request_defaults,
+        **task.request,
+        "query": example.question,
+        "documents": [dict(document) for document in example.documents],
+    }
+    plan = select_rag_plan(
+        request,
+        model=executor_model,
+        skill_root=workspace.skill_root,
+        manage_skill=framework_config.manage_skill,
+    )
+    command = compile_rag_command(
+        plan,
+        skill_root=workspace.skill_root,
+        context=runtime_context,
+    )
+    result = command.run(request)
+    answer = result.get("answer")
+    if not isinstance(answer, str) or not answer.strip():
+        raise TaskWorkflowError("Post-revision execution returned an empty answer")
+    metrics = evaluate_rag_result(
+        result,
+        gold_answers=example.answers,
+        relevant_ids=example.relevant_document_ids,
+        generation_evaluator=generation_evaluator,
+    ).to_dict()
+    comparison = _compare_revision_metrics(
+        selected_skill=selected_skill,
+        baseline=baseline_metrics,
+        revised=metrics,
+        prediction=answer,
+        gold_answers=example.answers,
+    )
+    if not comparison["improved"]:
+        raise TaskWorkflowError(str(comparison["reason"]))
+    return {
+        "question_id": example.id,
+        "prediction": answer.strip(),
+        "agentic_skill": plan.agentic_skill,
+        "retrieved_document_ids": _retrieved_ids(result),
+        "metrics": metrics,
+        "comparison": comparison,
+    }
+
+
+def _compare_revision_metrics(
+    *,
+    selected_skill: str,
+    baseline: Mapping[str, Any],
+    revised: Mapping[str, Any],
+    prediction: str,
+    gold_answers: Sequence[str],
+) -> dict[str, Any]:
+    """按 Skill 所属阶段比较核心指标，拒绝无提升或明显回退的修订。"""
+    retrieval_keys = ("F1", "MRR", "Hit@10", "MAP", "NDCG")
+    generation_keys = ("ChrF++", "METEOR", "R1", "RL")
+    before_retrieval = _metric_average(baseline, "retrieval", retrieval_keys)
+    after_retrieval = _metric_average(revised, "retrieval", retrieval_keys)
+    before_generation = _metric_average(baseline, "generation", generation_keys)
+    after_generation = _metric_average(revised, "generation", generation_keys)
+    stage = _skill_metric_stage(selected_skill)
+    tolerance = 1e-6
+
+    if after_retrieval + tolerance < before_retrieval:
+        reason = (
+            "Post-revision retrieval score regressed: "
+            f"{before_retrieval:.6f} -> {after_retrieval:.6f}"
+        )
+        improved = False
+    elif stage == "retrieval":
+        improved = after_retrieval > before_retrieval + tolerance
+        reason = "Retrieval metrics did not measurably improve"
+    elif stage == "generation":
+        answer_supported = _prediction_contains_gold(prediction, gold_answers)
+        improved = (
+            answer_supported
+            and after_generation > before_generation + tolerance
+        )
+        reason = (
+            "Generation metrics did not measurably improve with a gold-supported "
+            "short answer"
+        )
+    else:
+        retrieval_gain = after_retrieval - before_retrieval
+        generation_gain = after_generation - before_generation
+        improved = max(retrieval_gain, generation_gain) > tolerance
+        reason = "The revision did not measurably improve retrieval or generation"
+
+    return {
+        "improved": improved,
+        "stage": stage,
+        "reason": None if improved else reason,
+        "baseline_retrieval_score": before_retrieval,
+        "revised_retrieval_score": after_retrieval,
+        "baseline_generation_score": before_generation,
+        "revised_generation_score": after_generation,
+    }
+
+
+def _metric_average(
+    metrics: Mapping[str, Any],
+    group: str,
+    keys: Sequence[str],
+) -> float:
+    values = metrics.get(group, {})
+    if not isinstance(values, Mapping):
+        return 0.0
+    numeric = [
+        float(values[key])
+        for key in keys
+        if isinstance(values.get(key), (int, float))
+    ]
+    return sum(numeric) / len(numeric) if numeric else 0.0
+
+
+def _skill_metric_stage(selected_skill: str) -> str:
+    normalized = selected_skill.lower()
+    if "generator" in normalized:
+        return "generation"
+    if any(
+        marker in normalized
+        for marker in ("retriever", "reranker", "rewriter", "hyde", "bm25", "vector")
+    ):
+        return "retrieval"
+    return "combined"
+
+
+def _prediction_contains_gold(prediction: str, gold_answers: Sequence[str]) -> bool:
+    normalized_prediction = _normalize_answer_text(prediction)
+    return any(
+        normalized_gold and normalized_gold in normalized_prediction
+        for answer in gold_answers
+        if (normalized_gold := _normalize_answer_text(answer))
+    )
+
+
+def _normalize_answer_text(value: str) -> str:
+    return " ".join(
+        "".join(character.lower() if character.isalnum() else " " for character in value).split()
+    )
 
 
 def parse_args() -> argparse.Namespace:

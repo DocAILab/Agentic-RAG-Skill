@@ -21,6 +21,7 @@ from framework import RAGSkillSpec, SkillSpecError, discover_specs
 from .contracts import OptimizationProposal, RevisionResult, SkillEdit
 from .python_validation import (
     validate_agentic_slot_references,
+    validate_component_context_contract,
     validate_component_output_contract,
     validate_python_file,
 )
@@ -232,6 +233,10 @@ class SkillWorkspace:
                             label=str(target),
                         )
                     if spec.kind.value == "component":
+                        validate_component_context_contract(
+                            target.read_text(encoding="utf-8"),
+                            label=str(target),
+                        )
                         validate_component_output_contract(
                             target.read_text(encoding="utf-8"),
                             output_types={
@@ -285,6 +290,30 @@ class SkillWorkspace:
             raise WorkspaceError(
                 "Source Skill repository changed during self-optimization"
             )
+
+    def rollback_revision(self, revision: RevisionResult, *, reason: str) -> None:
+        """把已应用修订恢复为其 before 快照，并记录动态验证失败原因。"""
+        specs = _specs_by_name(self.skill_root)
+        spec = specs.get(revision.selected_skill)
+        if spec is None:
+            raise WorkspaceError(
+                f"Cannot roll back missing Skill: {revision.selected_skill}"
+            )
+        before_dir = revision.revision_dir / "before"
+        if not before_dir.is_dir():
+            raise WorkspaceError(
+                f"Revision before snapshot is missing: {before_dir}"
+            )
+        _restore_package(spec.package_path, before_dir)
+        _write_json(
+            revision.revision_dir / "result.json",
+            {
+                "status": "rolled_back",
+                "reason": reason,
+                **revision.to_dict(),
+            },
+        )
+        self.assert_source_unchanged()
 
 
 def _validate_edits(

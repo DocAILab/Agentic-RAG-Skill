@@ -18,6 +18,7 @@ from .spec import (
 )
 
 SELECTION_MAX_TOKENS = 8192
+COMPONENT_SELECTION_MAX_ATTEMPTS = 2
 
 
 class SelectionError(ValueError):
@@ -181,31 +182,51 @@ def select_component_skills(
                 f"but only {len(slot_candidates[slot.name])} are available"
             )
 
-    payload = _call_json_model(
-        model,
-        system=(
-            "You are the frozen Executor Model at the Component selection stage. "
-            "Follow the selected Agentic Skill, respect every slot cardinality, "
-            "and return strict JSON."
-        ),
-        prompt=(
-            "SELECTED AGENTIC SKILL:\n"
-            f"{agentic_result.instructions}\n\n"
-            "RAG REQUEST:\n"
-            f"{_encode_request(request)}\n\n"
-            "COMPATIBLE COMPONENT ADVERTISEMENTS BY SLOT:\n"
-            f"{_slot_advertisements(agentic.slots, slot_candidates)}\n\n"
-            "Return "
-            '{"component_bindings":{"slot":["exact-component-name"]},'
-            '"reason":"..."}. Include every advertised slot; use [] for an '
-            "unused optional slot."
-        ),
+    system = (
+        "You are the frozen Executor Model at the Component selection stage. "
+        "Follow the selected Agentic Skill, respect every slot cardinality, "
+        "and return strict JSON."
     )
-    bindings = _validate_bindings(
-        payload.get("component_bindings"),
-        agentic.slots,
-        slot_candidates,
+    base_prompt = (
+        "SELECTED AGENTIC SKILL:\n"
+        f"{agentic_result.instructions}\n\n"
+        "RAG REQUEST:\n"
+        f"{_encode_request(request)}\n\n"
+        "COMPATIBLE COMPONENT ADVERTISEMENTS BY SLOT:\n"
+        f"{_slot_advertisements(agentic.slots, slot_candidates)}\n\n"
+        "Return "
+        '{"component_bindings":{"slot":["exact-component-name"]},'
+        '"reason":"..."}. Include every advertised slot; use [] for an '
+        "unused optional slot. Every binding value must be a JSON array of "
+        "exact component-name strings, even when the slot accepts only one item."
     )
+    prompt = base_prompt
+    last_error: SelectionError | None = None
+    for attempt in range(COMPONENT_SELECTION_MAX_ATTEMPTS):
+        try:
+            payload = _call_json_model(model, system=system, prompt=prompt)
+            bindings = _validate_bindings(
+                payload.get("component_bindings"),
+                agentic.slots,
+                slot_candidates,
+            )
+            break
+        except SelectionError as exc:
+            last_error = exc
+            if (
+                not _is_repairable_component_format_error(exc)
+                or attempt + 1 >= COMPONENT_SELECTION_MAX_ATTEMPTS
+            ):
+                raise
+            prompt = (
+                f"{base_prompt}\n\n"
+                "YOUR PREVIOUS RESPONSE WAS REJECTED:\n"
+                f"{exc}\n\n"
+                "Correct only the response format or invalid bindings and return "
+                "one strict JSON object. Do not include Markdown or commentary."
+            )
+    else:  # pragma: no cover - the loop either succeeds or raises
+        raise last_error or SelectionError("Component selection failed")
     component_by_name = {
         spec.package_name: spec for spec in component_specs
     }
@@ -228,6 +249,21 @@ def select_component_skills(
         bindings=bindings,
         instructions=instructions,
         reason=_optional_text(payload, "reason"),
+    )
+
+
+def _is_repairable_component_format_error(error: SelectionError) -> bool:
+    """仅将可由模型重新排版修复的 Component 输出错误标记为可重试。"""
+    message = str(error)
+    return (
+        message.startswith("Model did not return strict JSON")
+        or message == "Model JSON response must be an object"
+        or message == "component_bindings must be a JSON object"
+        or message.startswith("component_bindings must contain exactly these slots")
+        or "must be a string list" in message
+        or "contains a serialized JSON value" in message
+        or "contains duplicates" in message
+        or "Binding count for slot" in message
     )
 
 
@@ -431,6 +467,11 @@ def _validate_bindings(
         ):
             raise SelectionError(f"Binding for slot '{slot.name}' must be a string list")
         names = tuple(selected)
+        if any(_looks_like_serialized_json_value(name) for name in names):
+            raise SelectionError(
+                f"Binding for slot '{slot.name}' contains a serialized JSON value; "
+                "return component names directly or use an empty JSON array"
+            )
         if len(names) != len(set(names)):
             raise SelectionError(f"Binding for slot '{slot.name}' contains duplicates")
         if not slot.min_count <= len(names) <= slot.max_count:
@@ -446,6 +487,16 @@ def _validate_bindings(
             )
         bindings[slot.name] = names
     return bindings
+
+
+def _looks_like_serialized_json_value(value: str) -> bool:
+    """识别模型把空数组或对象错误包进字符串的常见输出。"""
+    stripped = value.strip()
+    return stripped in {"[]", "{}", "null"} or (
+        len(stripped) >= 2
+        and stripped[0] in "[{"
+        and stripped[-1] in "]}"
+    )
 
 
 def _required_text(payload: Mapping[str, Any], key: str) -> str:
