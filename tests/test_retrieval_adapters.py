@@ -46,6 +46,7 @@ def test_two_wiki_adapts_record_oriented_context() -> None:
             ],
             "supporting_facts": [{"title": "Second", "sent_id": 0}],
             "answer": "Second place",
+            "type": "compositional",
         }
     )
 
@@ -53,6 +54,33 @@ def test_two_wiki_adapts_record_oriented_context() -> None:
     assert example.relevant_document_ids == ("Second",)
     assert example.documents[0].text == "One."
     assert example.gold_answers == ("Second place",)
+    assert example.metadata["question_type"] == "compositional"
+
+
+def test_two_wiki_normalizes_bridge_comparison_type() -> None:
+    example = adapt_two_wiki(
+        {
+            "_id": "wiki-bridge",
+            "question": "Are they the same?",
+            "context": [["First", ["One."]], ["Second", ["Two."]]],
+            "supporting_facts": [["First", 0], ["Second", 0]],
+            "type": "bridge-comparison",
+        }
+    )
+
+    assert example.metadata["question_type"] == "bridge_comparison"
+
+
+def test_two_wiki_rejects_unknown_question_type() -> None:
+    with pytest.raises(AdapterError, match="unsupported 2Wiki question type"):
+        adapt_two_wiki(
+            {
+                "_id": "wiki-unknown",
+                "question": "Where?",
+                "context": [["First", ["One."]]],
+                "type": "unknown",
+            }
+        )
 
 
 def test_two_wiki_adapts_json_strings_from_official_parquet() -> None:

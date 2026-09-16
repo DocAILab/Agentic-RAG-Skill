@@ -13,6 +13,7 @@ from self_optimization import (
     load_task_workflow_config,
     run_task_workflow,
 )
+from self_optimization.task_flow import _compare_revision_metrics
 
 PROJECT_ROOT = Path(__file__).parents[1]
 SKILL_ROOT = PROJECT_ROOT / "framework" / "skills"
@@ -56,6 +57,55 @@ class FixedGenerationEvaluator:
             "cer": 0.0,
             "wer": 0.0,
         }
+
+
+def test_revision_metric_gate_requires_generation_improvement_and_gold_answer() -> None:
+    """验证生成器修订既要提升指标，也必须包含受监督的正确短答案。"""
+    baseline = {
+        "retrieval": {"F1": 1.0, "MRR": 1.0, "Hit@10": 1.0, "MAP": 1.0, "NDCG": 1.0},
+        "generation": {"ChrF++": 0.0, "METEOR": 0.0, "R1": 0.0, "RL": 0.0},
+    }
+    revised = {
+        "retrieval": dict(baseline["retrieval"]),
+        "generation": {"ChrF++": 0.4, "METEOR": 0.3, "R1": 0.5, "RL": 0.5},
+    }
+
+    wrong = _compare_revision_metrics(
+        selected_skill="component-grounded-generator",
+        baseline=baseline,
+        revised=revised,
+        prediction="The answer is Alasdair Mor.",
+        gold_answers=("Domhnall mac Raghnaill",),
+    )
+    correct = _compare_revision_metrics(
+        selected_skill="component-grounded-generator",
+        baseline=baseline,
+        revised=revised,
+        prediction="Domhnall mac Raghnaill",
+        gold_answers=("Domhnall mac Raghnaill",),
+    )
+
+    assert wrong["improved"] is False
+    assert correct["improved"] is True
+
+
+def test_revision_metric_gate_rejects_generic_manage_change_without_gain() -> None:
+    """验证不改变真实输出指标的 Manage 文档修改会被拒绝。"""
+    metrics = {
+        "retrieval": {"F1": 1.0, "MRR": 1.0, "Hit@10": 1.0, "MAP": 1.0, "NDCG": 1.0},
+        "generation": {"ChrF++": 0.4, "METEOR": 0.3, "R1": 0.5, "RL": 0.5},
+    }
+
+    comparison = _compare_revision_metrics(
+        selected_skill="manage-rag-default",
+        baseline=metrics,
+        revised=metrics,
+        prediction="Alpha",
+        gold_answers=("Alpha",),
+    )
+
+    assert comparison["improved"] is False
+    assert "did not measurably improve" in comparison["reason"]
 
 
 def test_load_task_workflow_config_resolves_ordered_tasks(tmp_path) -> None:

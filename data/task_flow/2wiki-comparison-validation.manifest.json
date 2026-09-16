@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "dataset": "2wiki",
+  "dataset_config": null,
+  "split": "validation",
+  "examples": 10,
+  "invalid_before_completion": 0,
+  "source_indices": [
+    10407,
+    3706,
+    4274,
+    9680,
+    3054,
+    3695,
+    7329,
+    5684,
+    10216,
+    5723
+  ],
+  "sample_ids": [
+    "7c204e2808c011ebbd8aac1f6bf848b6",
+    "7885ef99090011ebbdadac1f6bf848b6",
+    "4a85df04089811ebbd77ac1f6bf848b6",
+    "9d32eeb708ef11ebbda8ac1f6bf848b6",
+    "a9f8a706086511ebbd5eac1f6bf848b6",
+    "b4a5545c096311ebbdafac1f6bf848b6",
+    "33997fa909b511ebbdb0ac1f6bf848b6",
+    "361dc208086f11ebbd62ac1f6bf848b6",
+    "e83437f7086a11ebbd5fac1f6bf848b6",
+    "17e3349208df11ebbd9fac1f6bf848b6"
+  ],
+  "output": "2wiki-comparison-validation.jsonl",
+  "sha256": "61a8b4c3dae0512795a998e7aeba9e60bccd9a9bd414d86f57d1e43d197a9ac0",
+  "filtered_before_completion": 39,
+  "question_type": "comparison",
+  "sample_manifest": {
+    "dataset": "2wiki",
+    "split": "validation",
+    "requested_size": 100,
+    "digest": "aa2863cfec1b733ccd96c1a54a764ad60363489846627803cf76c101d9e15539"
+  }
+}

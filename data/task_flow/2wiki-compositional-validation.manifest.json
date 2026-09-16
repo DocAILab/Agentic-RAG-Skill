@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "dataset": "2wiki",
+  "dataset_config": null,
+  "split": "validation",
+  "examples": 10,
+  "invalid_before_completion": 0,
+  "source_indices": [
+    2160,
+    9951,
+    11976,
+    6647,
+    9045,
+    7171,
+    6670,
+    12433,
+    8180,
+    10114
+  ],
+  "sample_ids": [
+    "22f9ba0c0bde11eba7f7acde48001122",
+    "bac894da0bdd11eba7f7acde48001122",
+    "ef7ba7760bdd11eba7f7acde48001122",
+    "43393af40bde11eba7f7acde48001122",
+    "18d5bb700bde11eba7f7acde48001122",
+    "31218d120bde11eba7f7acde48001122",
+    "9324a6ee0bdd11eba7f7acde48001122",
+    "a7f52a320bdb11eba7f7acde48001122",
+    "31e741520bdd11eba7f7acde48001122",
+    "072f19a00bdb11eba7f7acde48001122"
+  ],
+  "output": "2wiki-compositional-validation.jsonl",
+  "sha256": "1244ba5fe3809729b307691e8e62405647074efc7d57d2d8852b0e9db889849c",
+  "filtered_before_completion": 16,
+  "question_type": "compositional",
+  "sample_manifest": {
+    "dataset": "2wiki",
+    "split": "validation",
+    "requested_size": 100,
+    "digest": "aa2863cfec1b733ccd96c1a54a764ad60363489846627803cf76c101d9e15539"
+  }
+}

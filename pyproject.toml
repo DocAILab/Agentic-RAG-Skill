@@ -58,6 +58,7 @@ framework = [
 self_optimization = [
     "settings.example.yaml",
     "task_flow.example.yaml",
+    "task_flow.2wiki.example.yaml",
 ]
 
 [tool.pytest.ini_options]
