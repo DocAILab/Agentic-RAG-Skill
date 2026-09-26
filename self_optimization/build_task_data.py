@@ -91,7 +91,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--dataset",
         required=True,
-        choices=("hotpotqa", "2wiki", "2wikimultihopqa", "triviaqa"),
+        choices=("hotpotqa", "2wiki", "2wikimultihopqa", "triviaqa", "financebench"),
     )
     parser.add_argument("--split", default="validation")
     parser.add_argument("--dataset-config")

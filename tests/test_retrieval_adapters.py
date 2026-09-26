@@ -120,6 +120,7 @@ def test_financebench_adapts_evidence_documents_and_metadata() -> None:
     assert example.documents[0].text == "Acme makes widgets."
     assert example.relevant_document_ids == ("ACME_2023_10K#p12",)
     assert example.label_type == "evidence"
+    assert example.gold_answers == ("Widgets",)
     assert example.metadata["dataset"] == "financebench"
     assert example.metadata["company"] == "Acme"
 
