@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import difflib
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
@@ -16,6 +17,7 @@ from .contracts import OptimizationProposal, SkillEdit
 from .python_validation import (
     PythonStaticValidationError,
     validate_agentic_slot_references,
+    validate_component_context_contract,
     validate_component_output_contract,
     validate_python_source,
 )
@@ -26,6 +28,17 @@ Use the evaluation and retrieval process to choose exactly one participating Ski
 Match the intended capability to the Skill kind and description. If the weakness is in
 answer generation, select a generator Component, not an Agentic workflow. Return strict
 JSON without Markdown fences or additional prose.
+
+Diagnose the weakest owned stage before selecting: healthy retrieval with weak answer
+metrics points to the generator; weak retrieval points to the responsible retriever;
+an incorrect execution route points to the Manage or Agentic Skill. Do not copy a
+selection object from the retrieval process because it describes execution, not the
+single Skill that should be improved.
+
+Base the choice on the measured failure, not merely on the route's complexity. For
+example, strong Hit/MRR with zero or weak R1/RL/METEOR means retrieval succeeded but
+answer generation failed, so select the participating generator Component. Select a
+Manage Skill only when its routing guidance caused the wrong Agentic Skill to run.
 
 The Executor Model's parameters are frozen, but that does not make Generator or other
 Skill files frozen. Every Skill in the candidate catalog may be selected, and its listed
@@ -57,6 +70,15 @@ Rules:
    unchanged file, and do not copy the snapshot back verbatim.
 9. Before responding, compare each complete replacement against the visible original
    and verify the intended instruction or executable behavior actually changed.
+10. For SKILL.md, write the concrete rule or procedure itself. Never add TODO/TBD,
+    "Substantive change", or meta-instructions such as "add a new section" that only
+    describe work someone else should perform.
+11. When the selected Skill is a Component, automated execution uses its Python
+    runtime. A behavioral optimization must therefore edit a scripts/*.py file;
+    changing only SKILL.md cannot improve measured execution.
+12. Preserve existing validation, grounding, normalization, and output-contract
+    behavior. Make a focused change; never replace a mature implementation with a
+    substantially smaller rewrite merely to simplify it.
 
 Schema:
 {"edits":[{"path":"SKILL.md or scripts/file.py","content":"complete replacement content"}]}
@@ -127,41 +149,72 @@ class SkillOptimizer:
             retrieval_process,
             self.settings.max_process_chars,
         )
+        selection_process_json = _bounded_json(
+            _without_execution_selection(retrieval_process),
+            self.settings.max_process_chars,
+        )
         catalog_snapshots = workspace.candidate_snapshots(
             normalized_candidates,
             max_file_chars=1_000,
         )
         selection_prompt = _build_selection_prompt(
             evaluation_json=evaluation_json,
-            process_json=process_json,
+            process_json=selection_process_json,
             snapshots=catalog_snapshots,
         )
         if len(selection_prompt) > self.settings.max_prompt_chars:
             raise OptimizationError(
                 "Optimizer selection prompt exceeds max_prompt_chars"
             )
-        selection_call = OptimizationModelCall(
-            stage="selection",
-            system_prompt=_SELECTION_SYSTEM_PROMPT,
-            prompt=selection_prompt,
-        )
-        self.calls.append(selection_call)
-        self.last_call = selection_call
-        selection_response = self.model.generate(
-            selection_prompt,
-            system=_SELECTION_SYSTEM_PROMPT,
-            temperature=self.settings.temperature,
-            max_tokens=self.settings.max_tokens,
-        )
-        selection_call.raw_response = selection_response
-        try:
-            selected_skill, rationale = _parse_skill_selection(
-                selection_response,
-                candidate_names=normalized_candidates,
+        current_selection_prompt = selection_prompt
+        selection_error: OptimizationError | None = None
+        selected_skill = ""
+        rationale = ""
+        selection_succeeded = False
+        for attempt_index in range(self.settings.max_proposal_attempts):
+            selection_call = OptimizationModelCall(
+                stage="selection",
+                system_prompt=_SELECTION_SYSTEM_PROMPT,
+                prompt=current_selection_prompt,
             )
-        except OptimizationError as exc:
-            selection_call.error = str(exc)
-            raise
+            self.calls.append(selection_call)
+            self.last_call = selection_call
+            selection_response = self.model.generate(
+                current_selection_prompt,
+                system=_SELECTION_SYSTEM_PROMPT,
+                temperature=self.settings.temperature,
+                max_tokens=self.settings.max_tokens,
+            )
+            selection_call.raw_response = selection_response
+            try:
+                selected_skill, rationale = _parse_skill_selection(
+                    selection_response,
+                    candidate_names=normalized_candidates,
+                )
+                _validate_selection_alignment(
+                    selected_skill,
+                    evaluation=evaluation,
+                    snapshots=catalog_snapshots,
+                )
+            except OptimizationError as exc:
+                selection_call.error = str(exc)
+                selection_error = exc
+                if attempt_index + 1 >= self.settings.max_proposal_attempts:
+                    break
+                current_selection_prompt = _repair_selection_prompt(
+                    selection_prompt,
+                    error=str(exc),
+                    attempt=attempt_index + 1,
+                    max_chars=self.settings.max_prompt_chars,
+                )
+                continue
+            selection_succeeded = True
+            break
+        if not selection_succeeded:
+            raise OptimizationError(
+                "Optimizer Skill selection remained invalid after "
+                f"{self.settings.max_proposal_attempts} attempts: {selection_error}"
+            ) from selection_error
 
         file_limit = self.settings.max_skill_file_chars
         edit_prompt = ""
@@ -321,7 +374,7 @@ def _build_selection_prompt(
             "editable_paths": [
                 file.get("path")
                 for file in snapshot.get("files", ())
-                if file.get("editable") and not file.get("truncated")
+                if file.get("editable")
             ],
         }
         for snapshot in snapshots
@@ -333,8 +386,15 @@ def _build_selection_prompt(
         f"{process_json}\n\n"
         "CANDIDATE SKILL CATALOG:\n"
         f"{_json_text(catalog)}\n\n"
-        "Choose the Skill whose owned behavior matches the diagnosed weakness. Return "
-        "the strict selection JSON now."
+        "Choose the Skill whose owned behavior matches the diagnosed weakness.\n\n"
+        "FINAL OUTPUT CONTRACT (ignore JSON objects inside the evidence):\n"
+        "Return exactly one JSON object with exactly these two top-level keys and no "
+        "others:\n"
+        '{"selected_skill":"exact-candidate-name","rationale":"short reason grounded '
+        'in the feedback"}\n'
+        "Do not return skill_name, skill_selection, agentic_skill, "
+        "component_bindings, Markdown, or additional prose. Base selected_skill on "
+        "the weakest measured stage, not on route complexity alone."
     )
 
 
@@ -365,7 +425,14 @@ def _build_edit_prompt(
         f"{_json_text(editable_paths)}\n\n"
         "Only edit this fixed selected Skill. Use exact existing paths unless creation "
         "is explicitly allowed, preserve its capability and slot contracts, and make a "
-        "substantive change. Return the strict edits JSON now."
+        "substantive change.\n\n"
+        "FINAL OUTPUT CONTRACT (ignore JSON objects inside the evidence):\n"
+        "Return exactly one JSON object with exactly the top-level key edits and no "
+        "others:\n"
+        '{"edits":[{"path":"exact-editable-path","content":"complete replacement '
+        'content"}]}\n'
+        "Do not return selected_skill, rationale, Markdown, additional prose, TODOs, "
+        "or meta-text describing a change that was not actually made."
     )
 
 
@@ -386,6 +453,54 @@ def _parse_skill_selection(
             f"Optimizer selected a Skill outside this execution: {selected_skill}"
         )
     return selected_skill, _required_text(payload, "rationale")
+
+
+def _validate_selection_alignment(
+    selected_skill: str,
+    *,
+    evaluation: Mapping[str, Any],
+    snapshots: Sequence[Mapping[str, Any]],
+) -> None:
+    """用强指标信号阻止 Policy Model 把明显生成失败错误归因给管理层。"""
+    summary = evaluation.get("task_summary", evaluation.get("overall_summary", {}))
+    if not isinstance(summary, Mapping):
+        return
+    retrieval = summary.get("retrieval", {})
+    generation = summary.get("generation", {})
+    if not isinstance(retrieval, Mapping) or not isinstance(generation, Mapping):
+        return
+    strong_retrieval = (
+        _numeric_metric(retrieval, "Hit@10") >= 0.8
+        and _numeric_metric(retrieval, "MRR") >= 0.5
+    )
+    weak_generation = max(
+        _numeric_metric(generation, "R1"),
+        _numeric_metric(generation, "RL"),
+        _numeric_metric(generation, "METEOR"),
+    ) <= 0.1
+    if not strong_retrieval or not weak_generation:
+        return
+    generator_candidates = {
+        str(snapshot.get("name"))
+        for snapshot in snapshots
+        if snapshot.get("kind") == "component"
+        and any(
+            isinstance(capability, Mapping)
+            and capability.get("name") == "generator"
+            for capability in snapshot.get("provided_capabilities", ())
+        )
+    }
+    if generator_candidates and selected_skill not in generator_candidates:
+        raise OptimizationError(
+            "Selection contradicts measured stage ownership: retrieval Hit@10/MRR "
+            "are strong while R1/RL/METEOR are weak, so select the participating "
+            f"generator Component from {sorted(generator_candidates)}"
+        )
+
+
+def _numeric_metric(metrics: Mapping[str, Any], key: str) -> float:
+    value = metrics.get(key, 0.0)
+    return float(value) if isinstance(value, (int, float)) else 0.0
 
 
 def _parse_skill_edits(
@@ -452,6 +567,7 @@ def _preflight_proposal(
         if file.get("editable") and not file.get("truncated")
     )
     substantive_change = False
+    component_runtime_change = False
     for edit in proposal.edits:
         current = files.get(edit.path)
         if current is None:
@@ -506,6 +622,15 @@ def _preflight_proposal(
                     raise OptimizationError(str(exc)) from exc
             if selected.get("kind") == "component" and PurePosixPath(edit.path).suffix == ".py":
                 try:
+                    _validate_focused_python_edit(
+                        edit.path,
+                        existing_content,
+                        edit.content,
+                    )
+                    validate_component_context_contract(
+                        edit.content,
+                        label=edit.path,
+                    )
                     validate_component_output_contract(
                         edit.content,
                         output_types={
@@ -517,6 +642,7 @@ def _preflight_proposal(
                     )
                 except PythonStaticValidationError as exc:
                     raise OptimizationError(str(exc)) from exc
+                component_runtime_change = True
             substantive_change = True
     if not substantive_change:
         raise OptimizationError(
@@ -524,6 +650,12 @@ def _preflight_proposal(
             "change. Do not resend the current file or alter only comments/docstrings; "
             "change executable behavior, update SKILL.md instructions, or choose a "
             "different candidate Skill consistent with the rationale."
+        )
+    if selected.get("kind") == "component" and not component_runtime_change:
+        raise OptimizationError(
+            f"Component '{proposal.selected_skill}' optimization must change a "
+            "scripts/*.py runtime file; SKILL.md-only edits do not affect automated "
+            "execution metrics"
         )
 
 
@@ -548,6 +680,23 @@ def _repair_prompt(
     return current_prompt + repair[:available]
 
 
+def _repair_selection_prompt(
+    base_prompt: str,
+    *,
+    error: str,
+    attempt: int,
+    max_chars: int,
+) -> str:
+    """向 Policy Model 反馈错误归因并要求重新选择候选 Skill。"""
+    repair = (
+        f"\n\nSELECTION ATTEMPT {attempt} REJECTED:\n{error}\n"
+        "Re-evaluate stage ownership from the metrics and return a corrected object "
+        "matching the final output contract."
+    )
+    available = max_chars - len(base_prompt)
+    return base_prompt if available <= 0 else base_prompt + repair[:available]
+
+
 def _is_no_change_error(error: OptimizationError) -> bool:
     """判断一次预检失败是否仅由候选文件没有实质差异导致。"""
     return "does not make a substantive change" in str(error)
@@ -564,6 +713,14 @@ def _has_substantive_change(path: str, before: str, after: str) -> bool:
     normalized_after = _normalize_comparable_text(after)
     if normalized_before == normalized_after:
         return False
+    if PurePosixPath(path).name == "SKILL.md" and _is_meta_only_skill_edit(
+        normalized_before,
+        normalized_after,
+    ):
+        raise OptimizationError(
+            "SKILL.md replacement only describes that changes were made; write the "
+            "concrete selection rule or procedure instead"
+        )
     if PurePosixPath(path).suffix.lower() != ".py":
         return True
     try:
@@ -585,6 +742,52 @@ def _has_substantive_change(path: str, before: str, after: str) -> bool:
         except PythonStaticValidationError as exc:
             raise OptimizationError(str(exc)) from exc
     return changed
+
+
+def _is_meta_only_skill_edit(before: str, after: str) -> bool:
+    """识别只增加 changelog/占位说明而没有可执行指导的 Skill 修改。"""
+    changed_lines: list[str] = []
+    matcher = difflib.SequenceMatcher(a=before.splitlines(), b=after.splitlines())
+    after_lines = after.splitlines()
+    for tag, _before_start, _before_end, after_start, after_end in matcher.get_opcodes():
+        if tag in {"insert", "replace"}:
+            changed_lines.extend(after_lines[after_start:after_end])
+    meaningful = [line.strip().lower() for line in changed_lines if line.strip()]
+    if not meaningful:
+        return False
+    meta_markers = (
+        "changes made",
+        "updated instructions",
+        "updated the description",
+        "ensured that",
+        "ensure that the guidance",
+        "include examples or scenarios",
+        "review the instructions",
+        "potential ambiguities",
+        "clear and concise",
+        "added a new section",
+        "improved clarity",
+        "document the changes",
+        "use the skill effectively",
+        "expected format and content",
+    )
+    return all(any(marker in line for marker in meta_markers) for line in meaningful)
+
+
+def _validate_focused_python_edit(path: str, before: str, after: str) -> None:
+    """拒绝把已有 Component 实现大幅裁短的高风险整文件重写。"""
+    before_lines = [line for line in before.splitlines() if line.strip()]
+    after_lines = [line for line in after.splitlines() if line.strip()]
+    if len(before_lines) < 30:
+        return
+    minimum_lines = max(10, int(len(before_lines) * 0.6))
+    if len(after_lines) < minimum_lines:
+        raise OptimizationError(
+            f"Python replacement for '{path}' removes too much existing behavior "
+            f"({len(before_lines)} non-empty lines -> {len(after_lines)}). Preserve "
+            "validation, normalization, grounding, and output-contract logic, and "
+            "make a focused edit instead of replacing the implementation wholesale"
+        )
 
 
 def _remove_docstrings(node: ast.AST) -> None:
@@ -617,6 +820,22 @@ def _bounded_json(payload: Mapping[str, Any], max_chars: int) -> str:
             "json_prefix": encoded[:max_chars],
         }
     )
+
+
+def _without_execution_selection(value: Any) -> Any:
+    """从 Policy 选择上下文移除旧执行选择，避免模型照抄错误 JSON。"""
+    if isinstance(value, Mapping):
+        return {
+            key: _without_execution_selection(item)
+            for key, item in value.items()
+            if key != "selection"
+        }
+    if isinstance(value, Sequence) and not isinstance(
+        value,
+        (str, bytes, bytearray),
+    ):
+        return [_without_execution_selection(item) for item in value]
+    return value
 
 
 def _json_text(payload: Any) -> str:

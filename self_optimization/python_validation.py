@@ -108,6 +108,147 @@ def validate_component_output_contract(
         )
 
 
+def validate_component_context_contract(content: str, *, label: str) -> None:
+    """检查 Component 对注入 context 的使用是否符合稳定运行时接口。"""
+    try:
+        tree = ast.parse(content)
+    except SyntaxError as exc:
+        raise PythonStaticValidationError(
+            f"Cannot inspect Component context calls in '{label}': {exc.msg}"
+        ) from exc
+    run_node = next(
+        (
+            node
+            for node in tree.body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == "run"
+        ),
+        None,
+    )
+    if run_node is None:
+        return
+
+    for node in ast.walk(run_node):
+        if not isinstance(node, ast.Compare):
+            continue
+        operands = [node.left, *node.comparators]
+        if any(isinstance(operand, ast.Name) and operand.id == "context" for operand in operands):
+            if any(isinstance(operator, (ast.In, ast.NotIn)) for operator in node.ops):
+                raise PythonStaticValidationError(
+                    f"Component context contract failed for '{label}': context is "
+                    "not a mapping or iterable; use getattr(context, name, None) "
+                    "to detect an optional runtime method"
+                )
+
+    vector_search_names = {"search_vector_index"}
+    scalar_names: set[str] = set()
+    for node in ast.walk(run_node):
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        value = node.value
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        names = {
+            target.id for target in targets if isinstance(target, ast.Name)
+        }
+        if _is_context_vector_search_lookup(value):
+            vector_search_names.update(names)
+        if _is_obvious_scalar_expression(value):
+            scalar_names.update(names)
+
+    required_search_keywords = {
+        "query_text",
+        "document_ids",
+        "document_texts",
+        "top_k",
+        "text_format_version",
+    }
+    for node in ast.walk(run_node):
+        if not isinstance(node, ast.Call):
+            continue
+        if _is_context_method(node.func, "call_model"):
+            keywords = {
+                keyword.arg for keyword in node.keywords if keyword.arg is not None
+            }
+            if (
+                len(node.args) != 1
+                or any(keyword.arg is None for keyword in node.keywords)
+                or not keywords <= {"temperature", "max_tokens"}
+            ):
+                raise PythonStaticValidationError(
+                    f"Component context contract failed for '{label}': "
+                    "call_model() requires one prompt positional argument and only "
+                    "temperature/max_tokens keyword arguments"
+                )
+        if _is_context_method(node.func, "embed"):
+            if len(node.args) != 1 or node.keywords:
+                raise PythonStaticValidationError(
+                    f"Component context contract failed for '{label}': "
+                    "context.embed() requires exactly one sequence-of-texts argument"
+                )
+            argument = node.args[0]
+            if _is_obvious_scalar_expression(argument) or (
+                isinstance(argument, ast.Name) and argument.id in scalar_names
+            ):
+                raise PythonStaticValidationError(
+                    f"Component context contract failed for '{label}': "
+                    "context.embed() requires a sequence of texts, not one string"
+                )
+        if not _is_vector_search_call(node.func, vector_search_names):
+            continue
+        keywords = {keyword.arg for keyword in node.keywords if keyword.arg is not None}
+        if node.args or keywords != required_search_keywords:
+            raise PythonStaticValidationError(
+                f"Component context contract failed for '{label}': "
+                "search_vector_index() requires keyword arguments "
+                f"{sorted(required_search_keywords)}"
+            )
+
+
+def _is_context_method(node: ast.expr, method: str) -> bool:
+    return (
+        isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "context"
+        and node.attr == method
+    )
+
+
+def _is_context_vector_search_lookup(node: ast.expr | None) -> bool:
+    if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
+        return False
+    if node.func.id != "getattr" or len(node.args) < 2:
+        return False
+    return (
+        isinstance(node.args[0], ast.Name)
+        and node.args[0].id == "context"
+        and isinstance(node.args[1], ast.Constant)
+        and node.args[1].value == "search_vector_index"
+    )
+
+
+def _is_vector_search_call(node: ast.expr, aliases: set[str]) -> bool:
+    return (
+        _is_context_method(node, "search_vector_index")
+        or isinstance(node, ast.Name)
+        and node.id in aliases
+    )
+
+
+def _is_obvious_scalar_expression(node: ast.expr | None) -> bool:
+    if isinstance(node, (ast.Constant, ast.JoinedStr, ast.Subscript)):
+        return isinstance(node, (ast.JoinedStr, ast.Subscript)) or isinstance(
+            node.value, str
+        )
+    if isinstance(node, ast.Call):
+        if isinstance(node.func, ast.Name) and node.func.id == "str":
+            return True
+        return (
+            isinstance(node.func, ast.Attribute)
+            and node.func.attr in {"strip", "lower", "upper", "casefold"}
+        )
+    return False
+
+
 def validate_python_source(content: str, *, label: str) -> None:
     """把候选源码写入临时文件，并检查语法和未定义名称。"""
     with tempfile.TemporaryDirectory(prefix="ragskill-python-check-") as directory:

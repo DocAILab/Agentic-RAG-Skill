@@ -58,3 +58,6 @@ optimization:
   allow_new_files: false
   # true 时，Qwen 超时、非法 JSON 或结构校验失败会记录为 rejected 并继续下一条样本。
   continue_on_optimization_error: true
+  # true 时，修订会先在当前 task 的真实样本上重新执行并计算指标；只有负责阶段
+  # 的核心指标确有提升时才接受，否则自动恢复 revision 的 before 快照。
+  verify_revision_execution: true

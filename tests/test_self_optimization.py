@@ -8,6 +8,7 @@ import pytest
 
 from framework import load_framework_config
 from self_optimization import (
+    OptimizationError,
     OptimizationProposal,
     OptimizationNoChange,
     OptimizationSettings,
@@ -19,6 +20,7 @@ from self_optimization import (
     load_self_optimization_config,
     run_self_optimization,
 )
+from self_optimization.optimizer import _validate_focused_python_edit
 
 PROJECT_ROOT = Path(__file__).parents[1]
 SKILL_ROOT = PROJECT_ROOT / "framework" / "skills"
@@ -304,6 +306,79 @@ def test_workspace_rejects_component_output_contract_mismatch(tmp_path) -> None:
     assert runtime_path.read_text(encoding="utf-8") == original
 
 
+def test_workspace_rejects_invalid_component_context_usage(tmp_path) -> None:
+    """验证语法正确但违反 context 调用契约的优化会回滚。"""
+    workspace = SkillWorkspace.create(SKILL_ROOT, tmp_path, run_id="bad-context")
+    runtime_path = (
+        workspace.skill_root
+        / "components"
+        / "component-vector-retriever"
+        / "scripts"
+        / "component.py"
+    )
+    original = runtime_path.read_text(encoding="utf-8")
+    invalid = """def run(inputs, context):
+    query = inputs.get("query", "")
+    documents = inputs.get("documents", [])
+    if "search_vector_index" in context:
+        results = context.search_vector_index(query, documents, 10)
+    else:
+        results = [(document, context.embed(document["text"])) for document in documents]
+    return {"documents": results}
+"""
+
+    with pytest.raises(RevisionRejected, match="context contract"):
+        workspace.apply_proposal(
+            OptimizationProposal(
+                selected_skill="component-vector-retriever",
+                rationale="Use the runtime embedding and index services.",
+                edits=(SkillEdit(path="scripts/component.py", content=invalid),),
+            ),
+            candidate_names=("component-vector-retriever",),
+            max_edits=3,
+            max_file_chars=50_000,
+            allow_new_files=False,
+        )
+
+    assert runtime_path.read_text(encoding="utf-8") == original
+
+
+def test_workspace_rejects_invalid_call_model_keywords(tmp_path) -> None:
+    """验证 Component 不能向 call_model 传入运行时不支持的关键字。"""
+    workspace = SkillWorkspace.create(SKILL_ROOT, tmp_path, run_id="bad-model-call")
+    runtime_path = (
+        workspace.skill_root
+        / "components"
+        / "component-grounded-generator"
+        / "scripts"
+        / "component.py"
+    )
+    original = runtime_path.read_text(encoding="utf-8")
+    invalid = """def run(inputs, context):
+    answer = context.call_model(
+        inputs["query"],
+        documents=inputs.get("documents", []),
+        max_tokens=inputs.get("max_tokens"),
+    )
+    return {"answer": str(answer)}
+"""
+
+    with pytest.raises(RevisionRejected, match="call_model.*temperature/max_tokens"):
+        workspace.apply_proposal(
+            OptimizationProposal(
+                selected_skill="component-grounded-generator",
+                rationale="Pass documents directly to the model API.",
+                edits=(SkillEdit(path="scripts/component.py", content=invalid),),
+            ),
+            candidate_names=("component-grounded-generator",),
+            max_edits=3,
+            max_file_chars=50_000,
+            allow_new_files=False,
+        )
+
+    assert runtime_path.read_text(encoding="utf-8") == original
+
+
 def test_workspace_rejects_unused_python_import(tmp_path) -> None:
     """验证只添加未使用 import 的 Python 提案不会成为有效 revision。"""
     workspace = SkillWorkspace.create(SKILL_ROOT, tmp_path, run_id="unused-import")
@@ -369,16 +444,167 @@ def test_optimizer_receives_metrics_trace_and_candidate_files(tmp_path) -> None:
     assert proposal.selected_skill == "manage-rag-default"
     assert "CANDIDATE SKILL CATALOG" in selection_prompt
     assert "SELECTED SKILL SNAPSHOT" not in selection_prompt
+    assert '"agentic_skill"' not in selection_prompt
+    assert '"SKILL.md"' in selection_prompt
+    assert "FINAL OUTPUT CONTRACT" in selection_prompt
+    assert "Do not return skill_name, skill_selection" in selection_prompt
+    assert "weakest measured stage" in selection_prompt
     assert "does not make Generator or other\nSkill files frozen" in model.calls[0][1]
     assert "EVALUATION FEEDBACK" in prompt
+    assert "FINAL OUTPUT CONTRACT" in prompt
+    assert "Do not return selected_skill, rationale" in prompt
+    assert "meta-text describing a change" in prompt
     assert "selected Skill's files marked\neditable=true are still editable" in (
         model.calls[1][1]
     )
     assert '"Hit@1": 0.0' in prompt
     assert "RETRIEVAL PROCESS" in prompt
+    assert '"agentic_skill": "agentic-sequential-skill"' in prompt
     assert '"step": "retrieve"' in prompt
     assert '"editable": false' in prompt
     assert "ragskill.yaml" in prompt
+
+
+def test_optimizer_repairs_stage_misattribution_before_editing(tmp_path) -> None:
+    """验证检索强而生成弱时会拒绝 Manage 误归因并重新选择 Generator。"""
+    workspace = SkillWorkspace.create(SKILL_ROOT, tmp_path, run_id="attribution")
+    generator_path = (
+        workspace.skill_root
+        / "components"
+        / "component-grounded-generator"
+        / "scripts"
+        / "component.py"
+    )
+    updated = generator_path.read_text(encoding="utf-8").replace(
+        "Return only the shortest direct answer span, with no explanation. ",
+        "Derive all required values, then return only the shortest direct answer "
+        "span, with no explanation. ",
+        1,
+    )
+    model = ScriptedModel(
+        [
+            json.dumps(
+                {
+                    "selected_skill": "manage-rag-default",
+                    "rationale": "The manager owns selection.",
+                }
+            ),
+            json.dumps(
+                {
+                    "selected_skill": "component-grounded-generator",
+                    "rationale": "Retrieval succeeded but answer generation failed.",
+                }
+            ),
+            json.dumps(
+                {"edits": [{"path": "scripts/component.py", "content": updated}]}
+            ),
+        ]
+    )
+    optimizer = SkillOptimizer(
+        model,
+        OptimizationSettings(max_proposal_attempts=3, max_skill_file_chars=50_000),
+    )
+
+    proposal = optimizer.propose(
+        workspace=workspace,
+        candidate_names=(
+            "manage-rag-default",
+            "component-vector-retriever",
+            "component-grounded-generator",
+        ),
+        evaluation={
+            "task_summary": {
+                "retrieval": {"Hit@10": 1.0, "MRR": 1.0},
+                "generation": {"R1": 0.0, "RL": 0.0, "METEOR": 0.0},
+            }
+        },
+        retrieval_process={"trace": [{"step": "retrieve"}]},
+    )
+
+    assert proposal.selected_skill == "component-grounded-generator"
+    assert [call.stage for call in optimizer.calls] == [
+        "selection",
+        "selection",
+        "editing",
+    ]
+    assert "Selection contradicts measured stage ownership" in optimizer.calls[0].error
+    assert "SELECTION ATTEMPT 1 REJECTED" in optimizer.calls[1].prompt
+
+
+def test_optimizer_rejects_meta_only_skill_changelog(tmp_path) -> None:
+    """验证 Changes Made 等修改说明不能被当成 Skill 优化。"""
+    workspace = SkillWorkspace.create(SKILL_ROOT, tmp_path, run_id="meta-only")
+    skill_path = workspace.skill_root / "manage" / "manage-rag-default" / "SKILL.md"
+    meta_only = skill_path.read_text(encoding="utf-8") + (
+        "\n# Changes Made\n\n1. Updated the description for clarity.\n"
+    )
+    model = ScriptedModel(
+        [
+            json.dumps(
+                {
+                    "selected_skill": "manage-rag-default",
+                    "rationale": "Routing guidance is unclear.",
+                }
+            ),
+            json.dumps({"edits": [{"path": "SKILL.md", "content": meta_only}]}),
+        ]
+    )
+    optimizer = SkillOptimizer(
+        model,
+        OptimizationSettings(max_proposal_attempts=1, max_skill_file_chars=50_000),
+    )
+
+    with pytest.raises(OptimizationError, match="concrete selection rule"):
+        optimizer.propose(
+            workspace=workspace,
+            candidate_names=("manage-rag-default",),
+            evaluation={"task_summary": {}},
+            retrieval_process={"trace": []},
+        )
+
+
+def test_optimizer_rejects_generic_updated_instructions(tmp_path) -> None:
+    """验证通用的清晰度/示例说明不构成可测量的 Skill 规则。"""
+    workspace = SkillWorkspace.create(SKILL_ROOT, tmp_path, run_id="generic-meta")
+    skill_path = workspace.skill_root / "manage" / "manage-rag-default" / "SKILL.md"
+    meta_only = skill_path.read_text(encoding="utf-8") + (
+        "\n# Updated Instructions\n\n"
+        "- Ensure that the guidance is clear and concise.\n"
+        "- Include examples or scenarios where appropriate.\n"
+        "- Review the instructions for potential ambiguities.\n"
+    )
+    model = ScriptedModel(
+        [
+            json.dumps(
+                {
+                    "selected_skill": "manage-rag-default",
+                    "rationale": "Routing guidance is unclear.",
+                }
+            ),
+            json.dumps({"edits": [{"path": "SKILL.md", "content": meta_only}]}),
+        ]
+    )
+    optimizer = SkillOptimizer(
+        model,
+        OptimizationSettings(max_proposal_attempts=1, max_skill_file_chars=50_000),
+    )
+
+    with pytest.raises(OptimizationError, match="concrete selection rule"):
+        optimizer.propose(
+            workspace=workspace,
+            candidate_names=("manage-rag-default",),
+            evaluation={"task_summary": {}},
+            retrieval_process={"trace": []},
+        )
+
+
+def test_optimizer_rejects_wholesale_component_python_rewrite() -> None:
+    """验证优化不能通过删除大部分既有实现来绕过行为保护。"""
+    before = "\n".join(["def run(inputs, context):"] + [f"    value_{i} = {i}" for i in range(40)])
+    after = "def run(inputs, context):\n    return {'answer': 'short'}\n"
+
+    with pytest.raises(OptimizationError, match="removes too much existing behavior"):
+        _validate_focused_python_edit("scripts/component.py", before, after)
 
 
 def test_optimizer_retries_python_docstring_only_change(tmp_path) -> None:

@@ -543,6 +543,100 @@ def test_component_stage_advertises_then_loads_only_selected_skills() -> None:
     assert "# Grounded Generator Component" not in prompt
 
 
+def test_component_stage_repairs_non_list_binding_once() -> None:
+    """验证真实模型把单组件写成字符串时会收到错误反馈并纠正。"""
+    specs = discover_specs(SAMPLE_ROOT, validate_runtime=False)
+    agentic = next(
+        spec for spec in specs if spec.package_name == "agentic-parallel-rag"
+    )
+    agentic_result = AgenticStageResult(
+        spec=agentic,
+        instructions=(agentic.package_path / "SKILL.md").read_text(
+            encoding="utf-8"
+        ),
+        reason="Use parallel retrieval.",
+        advertised_skills=("agentic-parallel-rag",),
+    )
+    valid_bindings = {
+        "rewriter": [],
+        "retrievers": [
+            "component-bm25-retriever",
+            "component-vector-retriever",
+        ],
+        "reranker": [],
+        "generator": ["component-grounded-generator"],
+    }
+    model = ScriptedModel(
+        [
+            json.dumps(
+                {
+                    "component_bindings": {
+                        **valid_bindings,
+                        "retrievers": "component-bm25-retriever",
+                    }
+                }
+            ),
+            json.dumps(
+                {
+                    "component_bindings": valid_bindings,
+                    "reason": "Use both compatible retrieval routes.",
+                }
+            ),
+        ]
+    )
+
+    result = select_component_skills(
+        {"query": "A multi-hop question"},
+        agentic_result=agentic_result,
+        model=model,
+        skill_root=SAMPLE_ROOT,
+    )
+
+    assert result.bindings["retrievers"] == (
+        "component-bm25-retriever",
+        "component-vector-retriever",
+    )
+    assert len(model.calls) == 2
+    assert "Binding for slot 'retrievers' must be a string list" in model.calls[1][0]
+
+
+def test_component_stage_repairs_stringified_empty_array_once() -> None:
+    """验证模型返回 [\"[]\"] 时会纠正为真正的空数组。"""
+    specs = discover_specs(SAMPLE_ROOT, validate_runtime=False)
+    agentic = next(
+        spec for spec in specs if spec.package_name == "agentic-sequential-skill"
+    )
+    agentic_result = AgenticStageResult(
+        spec=agentic,
+        instructions=(agentic.package_path / "SKILL.md").read_text(encoding="utf-8"),
+        reason="Use sequential retrieval.",
+        advertised_skills=("agentic-sequential-skill",),
+    )
+    correct = {
+        "rewriter": [],
+        "retriever": ["component-vector-retriever"],
+        "reranker": [],
+        "generator": ["component-grounded-generator"],
+    }
+    malformed = {**correct, "rewriter": ["[]"]}
+    model = ScriptedModel(
+        [
+            json.dumps({"component_bindings": malformed}),
+            json.dumps({"component_bindings": correct}),
+        ]
+    )
+
+    result = select_component_skills(
+        {"query": "A comparison question"},
+        agentic_result=agentic_result,
+        model=model,
+        skill_root=SAMPLE_ROOT,
+    )
+
+    assert result.bindings["rewriter"] == ()
+    assert "serialized JSON value" in model.calls[1][0]
+
+
 def test_component_stage_rejects_hyde_with_bm25_retriever() -> None:
     """验证 Component 选择阶段拒绝 HyDE 与 BM25 的错误组合。"""
     specs = discover_specs(SAMPLE_ROOT, validate_runtime=False)
