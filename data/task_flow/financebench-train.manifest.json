@@ -1,0 +1,16 @@
+{
+  "schema_version": 1,
+  "dataset": "financebench",
+  "dataset_config": null,
+  "split": "train",
+  "examples": 1,
+  "invalid_before_completion": 0,
+  "source_indices": [
+    0
+  ],
+  "sample_ids": [
+    "financebench_id_03029"
+  ],
+  "output": "financebench-train.jsonl",
+  "sha256": "d73223d7dadd89a8a32b1ffa5f00b199415264f1bdf5df0d4b008ea642d8c8ba"
+}

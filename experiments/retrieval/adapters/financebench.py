@@ -15,6 +15,7 @@ def adapt_financebench(row: Mapping[str, Any]) -> RetrievalExample:
     query = required_text(row, "question", identity)
     documents = _evidence_documents(row, identity)
     relevant = tuple(dict.fromkeys(document.id for document in documents))
+    answer = str(row.get("answer") or "").strip()
     metadata: dict[str, Any] = {"dataset": "financebench"}
     for key in (
         "company",
@@ -36,6 +37,7 @@ def adapt_financebench(row: Mapping[str, Any]) -> RetrievalExample:
         documents=documents,
         relevant_document_ids=relevant,
         label_type="evidence" if relevant else None,
+        gold_answers=(answer,) if answer else (),
         metadata=metadata,
     )
 

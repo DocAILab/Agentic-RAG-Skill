@@ -32,3 +32,10 @@ workflow:
       max_examples: 1
       request:
         top_k: 10
+
+    - name: financebench-train
+      dataset: financebench
+      data_path: ../data/task_flow/financebench-train.jsonl
+      max_examples: 1
+      request:
+        top_k: 10

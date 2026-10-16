@@ -20,7 +20,7 @@ python -B run_self_optimization.py --limit 10
 
 `run_task_flow.py` 在同一个 Skill 工作副本上顺序运行多个数据任务。一个 task 可以包含多条问题；框架会先完成该 task 的全部 RAG 执行，再计算 task 汇总指标，并把汇总评估与有限条检索过程交给 Policy Model。每个 task 只优化一次、只修改一个本轮参与的 Skill，后续 task 会继续使用修改后的副本，直到任务列表结束。
 
-默认任务流包含处理好的 HotpotQA、2WikiMultihopQA 和 TriviaQA validation 小样本：
+默认任务流包含处理好的 HotpotQA、2WikiMultihopQA、TriviaQA validation 和 FinanceBench train 小样本：
 
 ```powershell
 Copy-Item self_optimization/task_flow.example.yaml self_optimization/task_flow.yaml

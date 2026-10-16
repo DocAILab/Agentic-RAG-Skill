@@ -1,6 +1,6 @@
 # Task Flow Data
 
-该目录保存多任务 Skill 自优化流程使用的小型、规范化本地数据。默认跨数据集任务流包含 HotpotQA、2WikiMultihopQA 和 TriviaQA validation 各一个样本；2Wiki 专用任务流还包含按官方推理类型固定切分的四个 task，每个 task 10 个样本。每条 JSONL 记录包含：
+该目录保存多任务 Skill 自优化流程使用的小型、规范化本地数据。默认跨数据集任务流包含 HotpotQA、2WikiMultihopQA 和 TriviaQA validation 各一个样本，以及 FinanceBench train 一个样本；2Wiki 专用任务流还包含按官方推理类型固定切分的四个 task，每个 task 10 个样本。每条 JSONL 记录包含：
 
 - `id`、`dataset`、`question`
 - `answers`
@@ -15,6 +15,7 @@
 python -B -m self_optimization.build_task_data --dataset hotpotqa --split validation --examples 1 --output data/task_flow/hotpotqa-validation.jsonl
 python -B -m self_optimization.build_task_data --dataset 2wiki --split validation --examples 1 --output data/task_flow/2wiki-validation.jsonl
 python -B -m self_optimization.build_task_data --dataset triviaqa --split validation --examples 1 --output data/task_flow/triviaqa-validation.jsonl
+python -B -m self_optimization.build_task_data --dataset financebench --split train --examples 1 --output data/task_flow/financebench-train.jsonl
 ```
 
 ## 2Wiki reasoning-type tasks
@@ -74,3 +75,5 @@ triviaqa-validation/
 rc validation 共 17,944 行（wiki/web 证据变体，唯一 QuestionId 约 9,960），
 默认过滤剔除 112 行无弱标签样本与 380 行完全重复记录后得到 17,452 个有效
 样本行；`--no-require-labels` 可放宽该过滤。
+
+FinanceBench 样本来自固定 revision 的公开 `train` split，仅包含标注的证据页，不代表完整 PDF 检索语料。
