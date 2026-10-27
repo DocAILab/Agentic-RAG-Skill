@@ -1,22 +1,22 @@
-# Skill 仓库自优化配置模板。复制为 settings.yaml 后填写本地 Qwen 服务信息。
-# settings.yaml、runs/ 和其中的 Skill 工作副本均被 .gitignore 排除。
+# Skill 自优化配置。复制为 settings.yaml，配置独立 Policy Model。
+# 工作副本、审计记录和报告默认保存在仓库外的 Preparation/runtime。
 schema_version: 1
 
-# 现有 RAG framework 配置。Executor、Embedding、HotpotQA 数据和向量缓存继续使用该配置。
+# Executor、Embedding、Skill 和向量缓存由 framework 配置提供；数据由 Group 指定。
 # 相对路径以当前 self_optimization/ 目录为基准。
 framework_config: ../framework/settings.yaml
 
 workspace:
   # 每次运行会在此目录下新建唯一子目录，并复制 framework/skills 到 <run>/skills。
   # 优化模型只修改这个副本，绝不会把修改写回 framework/skills。
-  runs_root: runs
+  runs_root: ../../Preparation/runtime/runs
   # null 时自动使用 UTC 时间和随机后缀。显式填写时目录必须不存在，防止覆盖旧实验。
   run_id: null
 
 optimizer:
   # VVEAI、本地 vLLM、SGLang、Ollama OpenAI 兼容服务均使用 openai-compatible。
   provider: openai-compatible
-  # VVEAI 的精确模型 ID 已通过 /v1/models 验证。确定使用 Qwen3.5 后只需替换本项。
+  # 按你的模型服务实际提供的 ID 配置。
   model: qwen3-8b
   # 客户端会继续追加 chat/completions，因此必须保留 /v1。
   base_url: https://api.vveai.com/v1
@@ -37,7 +37,7 @@ optimizer:
       enable_thinking: false
 
 optimization:
-  # 每条样本完成执行和评估后调用一次优化模型。null 表示处理 framework 测试集中的全部样本。
+  # 兼容逐样本 Python API 的上限；Group 入口的 QA 数量由 Group/CLI 决定。
   max_examples: 10
   # 优化需要一定探索性，但过高会降低 JSON 和代码稳定性。
   temperature: 0.1
@@ -58,6 +58,6 @@ optimization:
   allow_new_files: false
   # true 时，Qwen 超时、非法 JSON 或结构校验失败会记录为 rejected 并继续下一条样本。
   continue_on_optimization_error: true
-  # true 时，修订会先在当前 task 的真实样本上重新执行并计算指标；只有负责阶段
+  # true 时，修订会在 task_flow 配置指定的验证样本上重跑；只有负责阶段
   # 的核心指标确有提升时才接受，否则自动恢复 revision 的 before 快照。
   verify_revision_execution: true

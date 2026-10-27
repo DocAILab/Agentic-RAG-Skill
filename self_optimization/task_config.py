@@ -10,6 +10,9 @@ from typing import Any
 
 import yaml
 
+from framework.data_groups import DataGroup, GroupDataError, load_group
+from framework.interfaces import RESERVED_REQUEST_FIELDS
+
 from .config import SelfOptimizationConfig, load_self_optimization_config
 
 
@@ -36,17 +39,27 @@ class TaskWorkflowConfig:
     self_optimization: SelfOptimizationConfig
     tasks: tuple[RAGTaskConfig, ...]
     max_process_examples: int = 5
+    group: DataGroup | None = None
+    validation_examples_per_task: int = 3
 
 
-def load_task_workflow_config(path: str | Path) -> TaskWorkflowConfig:
+def load_task_workflow_config(
+    path: str | Path,
+    *,
+    group_path: str | Path | None = None,
+    shuffle_seed: int | None = None,
+) -> TaskWorkflowConfig:
     """加载任务流 YAML，并解析其引用的本地自优化配置和数据文件。"""
     config_path = Path(path).resolve()
     payload = _read_yaml(config_path)
-    if int(payload.get("schema_version", 0)) != 1:
+    version = payload.get("schema_version")
+    if type(version) is not int or version not in (1, 2):
         raise TaskWorkflowConfigError(
-            "Only task workflow schema_version 1 is supported"
+            "Only task workflow schema_version 1 or 2 is supported"
         )
     allowed_root = {"schema_version", "self_optimization_config", "workflow"}
+    if version == 2:
+        allowed_root.update({"group_path", "shuffle_seed"})
     unknown_root = set(payload) - allowed_root
     if unknown_root:
         raise TaskWorkflowConfigError(
@@ -58,7 +71,9 @@ def load_task_workflow_config(path: str | Path) -> TaskWorkflowConfig:
     )
     self_optimization = load_self_optimization_config(self_optimization_path)
     workflow = _required_mapping(payload, "workflow")
-    unknown_workflow = set(workflow) - {"max_process_examples", "tasks"}
+    allowed_workflow = {"max_process_examples", "validation_examples_per_task"}
+    allowed_workflow.update({"request"} if version == 2 else {"tasks"})
+    unknown_workflow = set(workflow) - allowed_workflow
     if unknown_workflow:
         raise TaskWorkflowConfigError(
             f"workflow contains unknown keys: {sorted(unknown_workflow)}"
@@ -67,6 +82,37 @@ def load_task_workflow_config(path: str | Path) -> TaskWorkflowConfig:
         workflow.get("max_process_examples", 5),
         "workflow.max_process_examples",
     )
+    validation_examples = _positive_int(
+        workflow.get("validation_examples_per_task", 3),
+        "workflow.validation_examples_per_task",
+    )
+    group = None
+    if version == 2 or group_path is not None:
+        source = (
+            Path(group_path).resolve()
+            if group_path is not None
+            else _resolve_path(_required_text(payload, "group_path"), config_path)
+        )
+        seed = payload.get("shuffle_seed", 42) if shuffle_seed is None else shuffle_seed
+        try:
+            group = load_group(source, shuffle_seed=seed)
+        except GroupDataError as exc:
+            raise TaskWorkflowConfigError(str(exc)) from exc
+        request = _parse_request(workflow.get("request", {}), "workflow.request")
+        tasks = tuple(
+            RAGTaskConfig(task.task_id, group.dataset, task.path, request=request)
+            for task in group.tasks
+        )
+        return TaskWorkflowConfig(
+            config_path=config_path,
+            self_optimization=self_optimization,
+            tasks=tasks,
+            max_process_examples=max_process_examples,
+            group=group,
+            validation_examples_per_task=validation_examples,
+        )
+    if shuffle_seed is not None:
+        raise TaskWorkflowConfigError("shuffle_seed requires a Group workflow")
     tasks_value = workflow.get("tasks")
     if isinstance(tasks_value, (str, bytes, bytearray)) or not isinstance(
         tasks_value,
@@ -87,6 +133,7 @@ def load_task_workflow_config(path: str | Path) -> TaskWorkflowConfig:
         self_optimization=self_optimization,
         tasks=tasks,
         max_process_examples=max_process_examples,
+        validation_examples_per_task=validation_examples,
     )
 
 
@@ -121,22 +168,7 @@ def _parse_task(
         )
     else:
         max_examples = None
-    request = value.get("request", {})
-    if not isinstance(request, Mapping):
-        raise TaskWorkflowConfigError(
-            f"workflow.tasks[{index}].request must be a mapping"
-        )
-    reserved = {"documents", "query"} & set(request)
-    if reserved:
-        raise TaskWorkflowConfigError(
-            f"workflow.tasks[{index}].request cannot override: {sorted(reserved)}"
-        )
-    try:
-        json.dumps(request, ensure_ascii=False)
-    except (TypeError, ValueError) as exc:
-        raise TaskWorkflowConfigError(
-            f"workflow.tasks[{index}].request must be JSON-compatible"
-        ) from exc
+    request = _parse_request(value.get("request", {}), f"workflow.tasks[{index}].request")
     return RAGTaskConfig(
         name=name,
         dataset=dataset,
@@ -144,6 +176,19 @@ def _parse_task(
         max_examples=max_examples,
         request=dict(request),
     )
+
+
+def _parse_request(value: Any, name: str) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        raise TaskWorkflowConfigError(f"{name} must be a mapping")
+    reserved = RESERVED_REQUEST_FIELDS & set(value)
+    if reserved:
+        raise TaskWorkflowConfigError(f"{name} cannot override: {sorted(reserved)}")
+    try:
+        json.dumps(value, ensure_ascii=False)
+    except (TypeError, ValueError) as exc:
+        raise TaskWorkflowConfigError(f"{name} must be JSON-compatible") from exc
+    return dict(value)
 
 
 def _read_yaml(path: Path) -> Mapping[str, Any]:

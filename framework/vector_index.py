@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import heapq
 import json
 import os
 from collections.abc import Callable, Sequence
@@ -45,13 +46,13 @@ class DenseVectorIndex:
             return []
         query = _normalize_query_vector(query_vector, self.dimension)
         scores = self.vectors @ query
-        ranked = sorted(
-            range(len(self.document_ids)),
+        ranked = heapq.nsmallest(
+            min(top_k, len(self.document_ids)), range(len(self.document_ids)),
             key=lambda index: (-float(scores[index]), self.document_ids[index]),
         )
         return [
             (index, float(scores[index]))
-            for index in ranked[: min(top_k, len(ranked))]
+            for index in ranked
         ]
 
 

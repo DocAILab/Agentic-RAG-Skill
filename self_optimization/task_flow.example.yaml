@@ -1,41 +1,15 @@
-# 多任务 RAG Skill 自优化任务流模板。
-# 所有相对路径均以当前 self_optimization/ 目录为基准。
-schema_version: 1
-
-# Executor、Embedding、Policy Model、工作副本和优化边界由该配置统一提供。
-# 本地运行使用被 .gitignore 排除的 settings.yaml；仓库仅提交 settings.example.yaml。
+# One Group, one shared Corpus, one optimization event after each Task.
+# All paths below are relative to this configuration file.
+schema_version: 2
 self_optimization_config: settings.yaml
+group_path: ../data/groups/hotpotqa-train-001/group.json
+shuffle_seed: 42
 
 workflow:
-  # 每个 task 最多向优化模型发送多少条检索过程；全部样本仍会执行并参与指标汇总。
+  # All QA contribute to metrics; only bounded traces go to Policy.
   max_process_examples: 5
-  # task 按这里的顺序串行执行。每个 task 结束后汇总评估并优化一次 Skill，
-  # 后续 task 继续使用同一个已更新的 Skill 副本。
-  tasks:
-    - name: hotpotqa-validation
-      dataset: hotpotqa
-      data_path: ../data/task_flow/hotpotqa-validation.jsonl
-      max_examples: 1
-      request:
-        top_k: 10
-
-    - name: 2wiki-validation
-      dataset: 2wikimultihopqa
-      data_path: ../data/task_flow/2wiki-validation.jsonl
-      max_examples: 1
-      request:
-        top_k: 10
-
-    - name: triviaqa-validation
-      dataset: triviaqa
-      data_path: ../data/task_flow/triviaqa-validation.jsonl
-      max_examples: 1
-      request:
-        top_k: 10
-
-    - name: financebench-train
-      dataset: financebench
-      data_path: ../data/task_flow/financebench-train.jsonl
-      max_examples: 1
-      request:
-        top_k: 10
+  # When verify_revision_execution is enabled, re-run evenly spaced QA.
+  # Reports record the actual subset and before/after mean metrics.
+  validation_examples_per_task: 3
+  request:
+    top_k: 10

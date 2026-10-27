@@ -1,0 +1,67 @@
+{
+  "corpus_overlap": [
+    {
+      "common_documents": 1,
+      "identical": false,
+      "jaccard": 8.33402783565297e-05,
+      "left": "hotpotqa-train-001",
+      "right": "2wiki-train-001"
+    },
+    {
+      "common_documents": 0,
+      "identical": false,
+      "jaccard": 0.0,
+      "left": "hotpotqa-train-001",
+      "right": "triviaqa-train-001"
+    },
+    {
+      "common_documents": 0,
+      "identical": false,
+      "jaccard": 0.0,
+      "left": "2wiki-train-001",
+      "right": "triviaqa-train-001"
+    }
+  ],
+  "groups": [
+    {
+      "corpus_document_count": 6000,
+      "corpus_fingerprint": "ffe364bc4a92292354c17568f649b21fbc37c0ef4481de118f7dceb46a6f07d5",
+      "dataset": "hotpotqa",
+      "distractor_count": 4023,
+      "group_id": "hotpotqa-train-001",
+      "path": "hotpotqa-train-001/group.json",
+      "qa_count": 1000,
+      "qa_per_task": 50,
+      "reference_count": 1977,
+      "sha256": "af5ebff9861a877e9d9683ab12833741ebca7b440daad839c8b1254bce5c5c97",
+      "task_count": 20
+    },
+    {
+      "corpus_document_count": 6000,
+      "corpus_fingerprint": "e7343184440fa4ab42b54bd86e9e76448b117792e21de77ace010cf2a8a92763",
+      "dataset": "2wikimultihopqa",
+      "distractor_count": 3689,
+      "group_id": "2wiki-train-001",
+      "path": "2wiki-train-001/group.json",
+      "qa_count": 1000,
+      "qa_per_task": 50,
+      "reference_count": 2311,
+      "sha256": "b2a70deed82ffad934da9815f496c9870a0da451734cc287efad0368c157bdac",
+      "task_count": 20
+    },
+    {
+      "corpus_document_count": 6000,
+      "corpus_fingerprint": "cd8f9896542be357ff690078441f0a9db3ae70286abb04fa389a2efdaeb27cf9",
+      "dataset": "triviaqa",
+      "distractor_count": 493,
+      "group_id": "triviaqa-train-001",
+      "path": "triviaqa-train-001/group.json",
+      "qa_count": 1000,
+      "qa_per_task": 50,
+      "reference_count": 5507,
+      "sha256": "4f82a10fe7bcfbc6903e3d86e29777d2c714811381761a23d3ad6d21af42e062",
+      "task_count": 20
+    }
+  ],
+  "schema_version": 1
+}

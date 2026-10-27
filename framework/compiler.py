@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import marshal
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import perf_counter
+from types import CodeType, MappingProxyType
 from typing import Any
 
 from .interfaces import ComponentContext
@@ -39,6 +42,17 @@ class CompilationError(ValueError):
 
 class ExecutionError(RuntimeError):
     """表示已编译 workflow 或具体 Component 的运行结果不合法。"""
+
+
+def _portable_code(code: CodeType) -> CodeType:
+    """实现摘要排除工作副本路径，保持相同 Skill 跨运行的磁盘缓存可复用。"""
+    return code.replace(
+        co_filename="",
+        co_consts=tuple(
+            _portable_code(value) if isinstance(value, CodeType) else value
+            for value in code.co_consts
+        ),
+    )
 
 
 @dataclass(slots=True)
@@ -74,6 +88,16 @@ class RuntimeComponentContext:
         init=False,
         repr=False,
     )
+    _bound_corpus: tuple[Mapping[str, Any], ...] | None = field(
+        default=None, init=False, repr=False,
+    )
+    _bound_corpus_key: str | None = field(default=None, init=False, repr=False)
+    _corpus_artifacts: dict[tuple[str, str, str], Any] = field(
+        default_factory=dict, init=False, repr=False,
+    )
+    _corpus_cache_builds: int = field(default=0, init=False, repr=False)
+    _corpus_cache_hits: int = field(default=0, init=False, repr=False)
+    _embedding_cache_identity: str | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         """规范化缓存目录，并在未显式提供时推导 Embedding 模型指纹。"""
@@ -81,6 +105,97 @@ class RuntimeComponentContext:
             self.vector_index_cache_dir = Path(self.vector_index_cache_dir).resolve()
         if self.embedding_model is not None and self.embedding_fingerprint is None:
             self.embedding_fingerprint = embedding_model_fingerprint(self.embedding_model)
+
+    def bind_corpus(
+        self,
+        documents: Sequence[Mapping[str, Any]],
+        fingerprint: str,
+    ) -> tuple[Mapping[str, Any], ...]:
+        """绑定一次 Group 语料，返回仅含检索字段的只读、可复用文档序列。
+
+        调用方必须复用返回的 tuple。未绑定的可变输入始终走即时计算路径，
+        因而不会因外部修改字典而读到旧统计。集合指纹之外还校验实际有序内容，
+        避免错误复用调用方提供的指纹以及打乱顺序后的文档位置。
+        """
+        if not isinstance(fingerprint, str) or not fingerprint.strip():
+            raise ExecutionError("Corpus fingerprint must be non-empty")
+        if isinstance(documents, (str, bytes)) or not isinstance(documents, Sequence):
+            raise ExecutionError("Corpus documents must be a sequence")
+        normalized = []
+        identifiers = set()
+        digest = hashlib.sha256(fingerprint.encode("utf-8"))
+        already_read_only = isinstance(documents, tuple)
+        for document in documents:
+            if not isinstance(document, Mapping):
+                raise ExecutionError("Corpus documents must be mappings")
+            identity = document.get("id")
+            title = document.get("title", "")
+            body = document.get("text")
+            if not isinstance(identity, str) or not identity or identity in identifiers:
+                raise ExecutionError("Corpus document IDs must be unique non-empty strings")
+            if not isinstance(title, str) or not isinstance(body, str):
+                raise ExecutionError("Corpus title and text must be strings")
+            identifiers.add(identity)
+            clean = {"id": identity, "title": title, "text": body}
+            encoded = json.dumps(
+                clean, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
+            digest.update(len(encoded).to_bytes(8, "big"))
+            digest.update(encoded)
+            normalized.append(MappingProxyType(clean))
+            already_read_only = already_read_only and (
+                isinstance(document, MappingProxyType) and set(document) == set(clean)
+            )
+        bound = documents if already_read_only else tuple(normalized)
+        corpus_key = digest.hexdigest()
+        if corpus_key != self._bound_corpus_key:
+            self._corpus_artifacts.clear()
+        self._bound_corpus = bound
+        self._bound_corpus_key = corpus_key
+        return bound
+
+    def corpus_cache(
+        self,
+        documents: Sequence[Mapping[str, Any]],
+        *,
+        namespace: str,
+        version: str,
+        build: Callable[[], Any],
+    ) -> Any:
+        """缓存已绑定只读语料的派生产物；普通候选文档不使用身份缓存。"""
+        if documents is not self._bound_corpus or self._bound_corpus_key is None:
+            return build()
+        key = (self._bound_corpus_key, namespace, version)
+        if key not in self._corpus_artifacts:
+            self._corpus_artifacts[key] = build()
+            self._corpus_cache_builds += 1
+        else:
+            self._corpus_cache_hits += 1
+        return self._corpus_artifacts[key]
+
+    def corpus_cache_info(self) -> dict[str, int | bool]:
+        """报告 Group 派生缓存的构建与复用次数，不暴露语料或标签。"""
+        return {
+            "bound": self._bound_corpus is not None,
+            "document_count": len(self._bound_corpus or ()),
+            "builds": self._corpus_cache_builds,
+            "hits": self._corpus_cache_hits,
+            "entries": len(self._corpus_artifacts),
+        }
+
+    def _current_embedding_identity(self) -> str:
+        if self.embedding_model is None or self.embedding_fingerprint is None:
+            raise ExecutionError(
+                "Selected Component requires embeddings, but no embedding_model was provided"
+            )
+        identity = hashlib.sha256(
+            (self.embedding_fingerprint + ":" + embedding_model_fingerprint(self.embedding_model))
+            .encode("utf-8")
+        ).hexdigest()
+        if identity != self._embedding_cache_identity:
+            self._embedding_cache.clear()
+            self._embedding_cache_identity = identity
+        return identity
 
     def call_model(
         self,
@@ -103,6 +218,7 @@ class RuntimeComponentContext:
             raise ExecutionError(
                 "Selected Component requires embeddings, but no embedding_model was provided"
             )
+        self._current_embedding_identity()
         normalized = [str(text) for text in texts]
         if not normalized:
             return []
@@ -154,25 +270,92 @@ class RuntimeComponentContext:
         text_format_version: str,
     ) -> Sequence[tuple[int, float]]:
         """加载或构建共享语料索引，并仅编码查询后执行向量检索。"""
-        if self.embedding_model is None or self.embedding_fingerprint is None:
-            raise ExecutionError(
-                "Selected Component requires embeddings, but no embedding_model was provided"
-            )
+        embedding_identity = self._current_embedding_identity()
         normalized_ids = tuple(str(document_id) for document_id in document_ids)
         normalized_texts = tuple(str(text) for text in document_texts)
         cache_key = vector_index_cache_key(
             normalized_ids,
             normalized_texts,
-            embedding_fingerprint=self.embedding_fingerprint,
+            embedding_fingerprint=embedding_identity,
             text_format_version=text_format_version,
         )
+        return self._search_vector_index(
+            query_text=query_text,
+            document_ids=normalized_ids,
+            document_texts=normalized_texts,
+            top_k=top_k,
+            text_format_version=text_format_version,
+            embedding_identity=embedding_identity,
+            cache_key=cache_key,
+        )
+
+    def search_corpus_vectors(
+        self,
+        *,
+        documents: Sequence[Mapping[str, Any]],
+        query_text: str,
+        top_k: int,
+        text_format_version: str,
+        text_formatter: Callable[[Mapping[str, Any]], str],
+    ) -> Sequence[tuple[int, float]] | None:
+        """对已绑定 Group 的快路径；非同一只读语料返回 None 供组件回退。"""
+        if documents is not self._bound_corpus:
+            return None
+        embedding_identity = self._current_embedding_identity()
+        formatter_code = getattr(text_formatter, "__code__", None)
+        implementation = hashlib.sha256(
+            marshal.dumps(_portable_code(formatter_code)) if formatter_code is not None
+            else repr(text_formatter).encode("utf-8")
+        ).hexdigest()
+        format_identity = f"{text_format_version}:{implementation}"
+
+        def prepare_inputs():
+            # 索引使用稳定 ID 顺序；随机打乱只影响运行视图，不重复编码同一语料。
+            positions = tuple(sorted(range(len(documents)), key=lambda i: documents[i]["id"]))
+            ids = tuple(str(documents[position]["id"]) for position in positions)
+            texts = tuple(str(text_formatter(documents[position])) for position in positions)
+            key = vector_index_cache_key(
+                ids, texts, embedding_fingerprint=embedding_identity,
+                text_format_version=format_identity,
+            )
+            return ids, texts, key, positions
+
+        ids, texts, key, positions = self.corpus_cache(
+            documents,
+            namespace="vector-inputs",
+            version=f"{embedding_identity}:{format_identity}",
+            build=prepare_inputs,
+        )
+        ranked = self._search_vector_index(
+            query_text=query_text,
+            document_ids=ids,
+            document_texts=texts,
+            top_k=top_k,
+            text_format_version=format_identity,
+            embedding_identity=embedding_identity,
+            cache_key=key,
+        )
+        return [(positions[index], score) for index, score in ranked]
+
+    def _search_vector_index(
+        self,
+        *,
+        query_text: str,
+        document_ids: tuple[str, ...],
+        document_texts: tuple[str, ...],
+        top_k: int,
+        text_format_version: str,
+        embedding_identity: str,
+        cache_key: str,
+    ) -> Sequence[tuple[int, float]]:
+        assert self.embedding_model is not None
         index = self._vector_indexes.get(cache_key)
         if index is None:
             index = build_or_load_vector_index(
-                normalized_ids,
-                normalized_texts,
+                document_ids,
+                document_texts,
                 embed=self.embedding_model.embed,
-                embedding_fingerprint=self.embedding_fingerprint,
+                embedding_fingerprint=embedding_identity,
                 text_format_version=text_format_version,
                 cache_root=self.vector_index_cache_dir,
             )

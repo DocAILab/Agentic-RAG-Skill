@@ -3,7 +3,50 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any, Protocol
+from typing import Any, Protocol, TypedDict
+
+
+# Offline data and evaluation fields must not override an execution request.
+# Keep this contract shared by configuration validation and runtime adaptation.
+RESERVED_REQUEST_FIELDS = frozenset({
+    "documents", "query", "question", "answers", "gold_answers",
+    "relevant_document_ids", "relevant_ids", "role", "origin", "source",
+    "metadata", "supporting_facts", "label_type", "source_question_ids",
+    "reference_count", "distractor_count",
+})
+
+
+class RAGRequest(TypedDict):
+    """Required execution fields; workflow-specific options may be added."""
+
+    query: str
+    documents: Sequence[Mapping[str, Any]]
+
+
+def build_rag_request(
+    question: str,
+    documents: Sequence[Mapping[str, Any]],
+    *,
+    options: Mapping[str, Any] | None = None,
+) -> RAGRequest:
+    """Map a QA question and shared runtime corpus to the Skill request contract.
+
+    Pass the annotation-free documents returned by ``load_group`` or
+    ``RuntimeComponentContext.bind_corpus``. The sequence is reused unchanged,
+    preserving the Group cache identity. This adapter does not deserialize raw
+    corpus records; offline fields in request options are discarded.
+    """
+    if not isinstance(question, str) or not question.strip():
+        raise ValueError("RAG question must be a non-empty string")
+    if isinstance(documents, (str, bytes, bytearray)) or not isinstance(documents, Sequence):
+        raise ValueError("RAG documents must be a runtime document sequence")
+    if options is not None and not isinstance(options, Mapping):
+        raise ValueError("RAG request options must be a mapping")
+    return {
+        **{key: value for key, value in (options or {}).items() if key not in RESERVED_REQUEST_FIELDS},
+        "query": question,
+        "documents": documents,
+    }
 
 
 class ComponentInvoker(Protocol):

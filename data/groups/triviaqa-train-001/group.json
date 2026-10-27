@@ -1,0 +1,240 @@
+{
+  "build": {
+    "base_policy": "reference_only",
+    "corpus_order": "canonical document ID",
+    "distractor_policy": "original selected-QA nonreferences first, remaining inventory documents second; each pool sorted by seeded content-ID hash",
+    "gzip_mtime": 0,
+    "qa_order": "sha256(seed:qa-order:qa_id)",
+    "qa_selection": "source-prefix-independent-qa",
+    "seed": 42,
+    "statistics": {
+      "excluded_original_nonreference_count": 0,
+      "label_type_counts": {
+        "weak_answer_alias": 1000
+      },
+      "normalized_document_occurrences": 69841,
+      "normalized_qa_scanned": 10000,
+      "normalized_unique_documents": 61539,
+      "retained_original_nonreference_count": 140,
+      "selected_qa_original_context_count": 5647,
+      "selected_qa_original_nonreference_count": 140,
+      "selected_qa_original_reference_count": 5507,
+      "supplemental_distractor_count": 353
+    }
+  },
+  "corpus": {
+    "distractor_count": 493,
+    "document_count": 6000,
+    "files": [
+      {
+        "bytes": 11309461,
+        "path": "corpus/part-0000.jsonl.gz",
+        "records": 2000,
+        "sha256": "33c73dc2fdab37779de2d1d296094811295d138121756c2546cf8aef20ee8dd4"
+      },
+      {
+        "bytes": 10728224,
+        "path": "corpus/part-0001.jsonl.gz",
+        "records": 2000,
+        "sha256": "30233a784cddc81ee05c7d48be962ad9d5296c5271cecea1b95aa238e23637ab"
+      },
+      {
+        "bytes": 11584195,
+        "path": "corpus/part-0002.jsonl.gz",
+        "records": 2000,
+        "sha256": "1bcf37bb1d85db4f0a374b6e6d51d2136dd3e42773926e3225f9378854afec64"
+      }
+    ],
+    "fingerprint": "cd8f9896542be357ff690078441f0a9db3ae70286abb04fa389a2efdaeb27cf9",
+    "identity": "sha256(compact UTF-8 JSON [stripped title, whitespace-normalized text])",
+    "origin_counts": {
+      "qa_context": 5647,
+      "supplement": 353
+    },
+    "reference_count": 5507,
+    "target_size": 6000,
+    "text_unit": "original unchunked source passage/page",
+    "unit": "document"
+  },
+  "dataset": "triviaqa",
+  "group_id": "triviaqa-train-001",
+  "labels": {
+    "distractor_definition": "not annotated as a reference for any selected QA; semantic irrelevance is not guaranteed",
+    "reference_definition": "union of selected QA relevant_document_ids under the source annotation convention",
+    "scope": "source-provided evidence for each selected QA; not exhaustive relevance judgments over the Group corpus",
+    "weak_label_rule": "normalized whole-answer-alias match in original evidence title/text",
+    "weak_labels": true
+  },
+  "qa_count": 1000,
+  "qa_per_task": 50,
+  "runtime": {
+    "document_fields": [
+      "id",
+      "title",
+      "text"
+    ],
+    "hide_offline_annotations": true,
+    "retrieval_scope": "group"
+  },
+  "schema_version": 1,
+  "source": {
+    "configuration": "rc",
+    "dataset": "triviaqa",
+    "inventory_filtering": {
+      "source_training_rows": 138384,
+      "source_unique_question_ids": 76523,
+      "unlabelled_qa_skipped_before_inventory_10000": 47
+    },
+    "normalization": "nonempty question, answers, documents and annotated references; unique source QA IDs; title stripped and document text whitespace-normalized",
+    "normalized_input_qa_count": 10000,
+    "normalized_input_sha256": "210209a1c40465a8e4f4dacd491b4bf135157f1df4bca3431e48dc08b2d1521b",
+    "repository": "mandarjoshi/trivia_qa",
+    "revision": "0f7faf33a3908546c6fd5b73a660e0f8ff173c2f",
+    "selection": "first independent QA in the prepared pinned-source inventory; deterministic seeded Task ordering",
+    "split": "train",
+    "variant_policy": "all evidence variants for selected QuestionIds merged across every RC train shard before Group selection"
+  },
+  "task_count": 20,
+  "tasks": [
+    {
+      "bytes": 45242,
+      "path": "tasks/task-0001.jsonl",
+      "qa_count": 50,
+      "sha256": "9697d1dc3ed4c3e6caeac2cc1364d30d2cfde7d07b9b580e267a7e7bfc67e481",
+      "task_id": "task-0001"
+    },
+    {
+      "bytes": 46798,
+      "path": "tasks/task-0002.jsonl",
+      "qa_count": 50,
+      "sha256": "9fbe909b09f41cd0818b41283b5893eed5d684f09efda8bb9f662954b3eaac07",
+      "task_id": "task-0002"
+    },
+    {
+      "bytes": 50135,
+      "path": "tasks/task-0003.jsonl",
+      "qa_count": 50,
+      "sha256": "1ce4d6ff6cd5ae6c5188d36b2ffa901089763cbece6b76f3414c3159fc51dc7e",
+      "task_id": "task-0003"
+    },
+    {
+      "bytes": 45664,
+      "path": "tasks/task-0004.jsonl",
+      "qa_count": 50,
+      "sha256": "9ce1d5450c38a5ae737f498bddb10b42de79da960b2556526ebdce48b036be55",
+      "task_id": "task-0004"
+    },
+    {
+      "bytes": 48235,
+      "path": "tasks/task-0005.jsonl",
+      "qa_count": 50,
+      "sha256": "9dbdec7a3da87f3b6376fef20e785d9b5ef370a7b2e2de1de8c4a9850d58f6a1",
+      "task_id": "task-0005"
+    },
+    {
+      "bytes": 45775,
+      "path": "tasks/task-0006.jsonl",
+      "qa_count": 50,
+      "sha256": "29d35772cf7c3b34e29e11983ba29cdb06bde13221d1bbe93339fed759319f22",
+      "task_id": "task-0006"
+    },
+    {
+      "bytes": 41921,
+      "path": "tasks/task-0007.jsonl",
+      "qa_count": 50,
+      "sha256": "2d58e2f2f72227a3d01cddeaae46403e6ae091b8f1363b8d434fd862455253c4",
+      "task_id": "task-0007"
+    },
+    {
+      "bytes": 48165,
+      "path": "tasks/task-0008.jsonl",
+      "qa_count": 50,
+      "sha256": "3c4064292fd12cbf610d6c6185ff059bd466047f86d3252dcf4fe57a62303df3",
+      "task_id": "task-0008"
+    },
+    {
+      "bytes": 44210,
+      "path": "tasks/task-0009.jsonl",
+      "qa_count": 50,
+      "sha256": "9407d1c46207f2acb018943eafc28def94b09eea1e7d1d4d819a485397f3c6e2",
+      "task_id": "task-0009"
+    },
+    {
+      "bytes": 49963,
+      "path": "tasks/task-0010.jsonl",
+      "qa_count": 50,
+      "sha256": "172eb3e4c60e02ec6938331d4465347147ffda548e76f7e78c50f7ccc8581383",
+      "task_id": "task-0010"
+    },
+    {
+      "bytes": 43349,
+      "path": "tasks/task-0011.jsonl",
+      "qa_count": 50,
+      "sha256": "82829d1c698bbe1910db680fb74217a0a88e9040f2e950739b97e15182812ef0",
+      "task_id": "task-0011"
+    },
+    {
+      "bytes": 42079,
+      "path": "tasks/task-0012.jsonl",
+      "qa_count": 50,
+      "sha256": "f3b8cb293cfcde5b9401f97791db644591ae22c43405a151e008233d1eee2cb6",
+      "task_id": "task-0012"
+    },
+    {
+      "bytes": 44548,
+      "path": "tasks/task-0013.jsonl",
+      "qa_count": 50,
+      "sha256": "cbc3e845d34c601ab7808c1b8803cc03ed8554251277978177045f62038501e5",
+      "task_id": "task-0013"
+    },
+    {
+      "bytes": 49651,
+      "path": "tasks/task-0014.jsonl",
+      "qa_count": 50,
+      "sha256": "e53624973aa7dd611d99af3cf88dcc541daabcf6358643ecce9aa23b8fb3e240",
+      "task_id": "task-0014"
+    },
+    {
+      "bytes": 50403,
+      "path": "tasks/task-0015.jsonl",
+      "qa_count": 50,
+      "sha256": "404fd582488fc729e8fda7069c6341b5f8770e7f9b85464e3fc35dc205b82dd7",
+      "task_id": "task-0015"
+    },
+    {
+      "bytes": 45385,
+      "path": "tasks/task-0016.jsonl",
+      "qa_count": 50,
+      "sha256": "83bb81199ce180cecb42b9603cabff85aa54312e6a2a3df19b3eb5215f786f6b",
+      "task_id": "task-0016"
+    },
+    {
+      "bytes": 46184,
+      "path": "tasks/task-0017.jsonl",
+      "qa_count": 50,
+      "sha256": "36fcb772f1851cd8fd9c8f3818f2cd4f2575e2833ea2c1c1507c848d3bbe930b",
+      "task_id": "task-0017"
+    },
+    {
+      "bytes": 43407,
+      "path": "tasks/task-0018.jsonl",
+      "qa_count": 50,
+      "sha256": "c960192139dc2ec7729d83cfedcf69e5da33b7103a3613619a4f4dc68361c348",
+      "task_id": "task-0018"
+    },
+    {
+      "bytes": 48273,
+      "path": "tasks/task-0019.jsonl",
+      "qa_count": 50,
+      "sha256": "26bd66fcda721b7d4fb70cb75ee5dc231113bac693774468ed81603e35404845",
+      "task_id": "task-0019"
+    },
+    {
+      "bytes": 44317,
+      "path": "tasks/task-0020.jsonl",
+      "qa_count": 50,
+      "sha256": "2d290a42a7c27a3f216e4314c5be94781102bfca36a98e210c4f1c0e99ff65b6",
+      "task_id": "task-0020"
+    }
+  ]
+}

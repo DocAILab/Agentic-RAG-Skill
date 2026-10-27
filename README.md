@@ -1,121 +1,155 @@
 # Agentic RAG Skill
 
-## Skill 自优化
+[English](README.md) · [简体中文](README.zh-CN.md)
 
-`self_optimization/` 实现独立于基础 Skill 仓库的逐样本自优化循环：每条查询完成检索和生成后，先使用现有 XRAG 对齐评估器计算指标，再把评估结果、Skill 选择、检索轨迹、组件耗时和有界文档片段交给独立 Policy Model。优化采用两阶段按需加载：第一阶段只暴露本轮候选 Skill 的名称、层级和能力摘要，让 Policy Model 选择一个 Skill；第二阶段只加载被选 Skill 的完整文件，由同一 Policy Model 提交文件替换。编辑阶段不会看到其他候选 Skill 的源码。
+Agentic RAG Skill is a framework for adapting retrieval-augmented generation by **selecting and revising executable Skills**. A frozen **Executor Model** selects a workflow for each question and powers its language-model components. A separately configured **Policy Model** uses Task-level feedback to revise one participating Skill in an isolated working copy. Later Tasks use the accepted revisions; model weights are never updated.
 
-每次运行都会将 `framework/skills/` 完整复制到新的 `self_optimization/runs/<run-id>/skills/`。优化只写入该副本；`ragskill.yaml`、包名和运行时契约受保护。每轮修改前保存快照，修改后重新验证整个 Skill 仓库和 Python 入口，非法修改自动回滚。Python 修改还需通过 Ruff 语法、未定义名称、未使用导入检查；Agentic workflow 只能调用清单声明的抽象组件槽位；Component 的字面量返回值必须保留其 `output_type` 声明的必需字段，例如 Retriever 必须返回 `documents`，Generator 必须返回 `answer`。启用 `optimization.verify_revision_execution` 后，框架还会用当前 task 的真实样本重新执行修订版，重新计算检索与生成指标；只有目标阶段出现可测量提升时才接受修订，否则恢复修改前快照。修订内容、统一 diff、逐阶段日志和最终报告均保存在对应运行目录。每次 Policy Model 调用还会在 `optimizer_calls/` 下保存完整 `system_prompt.txt`、`prompt.txt`、`raw_response.txt`、解析结果和最终 `result.json`，并以 `selection` 或 `editing` 标注调用阶段。提案若使用错误文件路径、没有实质修改、违反能力契约或返回非法 JSON，框架会把累积错误反馈给模型进行有限次数的自动纠正；每次尝试分别保存在 `optimizer_calls/*/attempts/attempt-XXXX/`。
+[Development guide (中文 Word)](docs/DEVELOPMENT.docx) · [Technical design and full Skill reference (中文 Word)](docs/TECHNICAL_DESIGN.docx) · [Data format (中文)](data/README.md)
 
-优化结果分为三种状态：`accepted` 表示副本中产生了通过验证的 revision，`skipped` 表示 Policy Model 已选择目标但在有限次编辑中没有提出实质变化，`rejected` 仅表示非法提案、契约违规或模型/API 错误。`skipped` 不会修改 Skill，也不会阻止后续 task 继续执行。
+## How it works
 
-```powershell
-Copy-Item self_optimization/settings.example.yaml self_optimization/settings.yaml
-# 在 settings.yaml 中填写本地 Qwen OpenAI-compatible API 地址和真实模型 ID
-python -B run_self_optimization.py --limit 10
-```
+| Layer | Responsibility |
+|---|---|
+| **Manage** | Turn the question, corpus summary, and constraints into workflow-selection guidance. |
+| **Agentic** | Define control flow and typed component slots: sequential, multi-branch, conditional, iterative, or complexity-routed execution. |
+| **Component** | Implement an atomic capability: retrieval, rewriting, reranking, classification, generation, or critique. |
 
-模板默认使用 VVEAI 已验证的模型 ID `qwen3-8b`，并通过 `extra_body.enable_thinking: false` 适配其非流式接口。未来确定 Qwen3.5 后只需修改 `optimizer.model`。也可以使用安装后的命令 `ragskill-self-optimize`。
+For each QA, the Executor reads Manage guidance, selects one Agentic Skill, then selects compatible Components for its slots. The framework checks the bindings, loads the selected Python scripts, and executes the workflow. Selection progressively exposes Skill instructions; the entire Skill library is not placed in every prompt.
 
-## 多任务自优化
+After each completed Task, all selected QA contribute metrics to one optimization event. The Policy selects one participating Skill and proposes bounded file replacements. The framework checks the edit scope, Python code, and Skill contracts. With the supplied configuration, it also reruns up to three evenly spaced QA from that Task and accepts only revisions that pass the improvement gate. Failed revisions are rolled back. See the [execution and optimization design](docs/TECHNICAL_DESIGN.docx).
 
-`run_task_flow.py` 在同一个 Skill 工作副本上顺序运行多个数据任务。一个 task 可以包含多条问题；框架会先完成该 task 的全部 RAG 执行，再计算 task 汇总指标，并把汇总评估与有限条检索过程交给 Policy Model。每个 task 只优化一次、只修改一个本轮参与的 Skill，后续 task 会继续使用修改后的副本，直到任务列表结束。
+## Data: Group → Corpus + Tasks → QA
 
-默认任务流包含处理好的 HotpotQA、2WikiMultihopQA、TriviaQA validation 和 FinanceBench train 小样本：
+Each Group owns one shared Corpus and an ordered sequence of Tasks. Every QA receives the **complete Group Corpus** as its retrieval scope, including when a run is limited to a few QA; a workflow may choose to skip retrieval.
 
-```powershell
-Copy-Item self_optimization/task_flow.example.yaml self_optimization/task_flow.yaml
-python -B run_task_flow.py
-```
+| Published Group | Tasks × QA | Corpus documents | Reference | Distractor |
+|---|---:|---:|---:|---:|
+| [`hotpotqa-train-001`](data/groups/hotpotqa-train-001/group.json) | 20 × 50 | 6,000 | 1,977 | 4,023 |
+| [`2wiki-train-001`](data/groups/2wiki-train-001/group.json) | 20 × 50 | 6,000 | 2,311 | 3,689 |
+| [`triviaqa-train-001`](data/groups/triviaqa-train-001/group.json) | 20 × 50 | 6,000 | 5,507 | 493 |
 
-`self_optimization/task_flow.yaml` 决定 task 顺序、数据路径、单 task 样本数和 RAG 请求参数；Executor、Embedding、Qwen、运行目录和修改边界继续由 `self_optimization/settings.yaml` 管理。安装后也可运行 `ragskill-task-flow`。每次运行的 `task-flow.report.json`、`task-flow.events.jsonl`、Skill 副本、逐 task revision 和 `optimizer_calls/task-XXXX/` 模型审计记录均写入 `self_optimization/runs/<run-id>/`。
+All deduplicated references are retained before distractors fill the remaining capacity. Stored records preserve annotations for audit; runtime documents expose only `id`, `title`, and `text`, in a seeded shuffled order. Answers and gold document IDs stay on the evaluation/Policy-feedback side. HotpotQA and 2Wiki use supporting-fact labels; TriviaQA uses weak answer-alias labels. Corpus sets may overlap across Groups but are not identical. FinanceBench is not included.
 
-Agentic RAG Skill 是一个支持三级 Skill 选择与按需加载的 RAG 研究框架。Executor Model 依次读取 Manage Skill、选择 Agentic RAG Skill、按 workflow 槽位选择 Components Skill，随后将选中的 workflow 与组件编译为可执行 Python 命令。
+These sizes describe the published data, not framework limits. See the [data contract](data/README.md) and [catalog](data/groups/catalog.json) for provenance, hashes, and overlap counts.
 
-## Skill 层级
+## Install and configure
 
-- **Manage Skill**：分析任务并指导 Agentic Skill 选择。
-- **Agentic RAG Skill**：定义 Sequential、Parallel 等 RAG 流程，只编排抽象组件槽位。
-- **Components Skill**：实现 Retriever、Reranker、Generator 等原子能力。
+Use **Python 3.11+** and run the following commands from the repository root. An editable source checkout is the documented installation path; published data live in this checkout.
 
-标准 Skill 包按类型位于 `framework/skills/manage/`、`framework/skills/agentic/` 和 `framework/skills/components/`。每个包以 `SKILL.md` 作为 Agent 框架通用入口，并使用可忽略的 `ragskill.yaml` 与 `scripts/` 扩展本框架运行能力。
-
-## 安装
-
-当前开发环境为 Python 3.13.5：
-
-```powershell
-python -m pip install -r requirements.txt
+```sh
 python -m pip install -e .
 ```
 
-只安装基础 framework 时也可以使用：
+The base installation supports data validation and BM25. For the supplied model-enabled workflows and default generation evaluation, install the optional dependencies:
 
-```powershell
-python -m pip install -e .
+```sh
+python -m pip install -e ".[embedding,evaluation,rerank]"
 ```
 
-## 配置
+Copy each template to its local counterpart **only if the local file does not already exist**:
 
-仓库只提交无密钥模板。首次运行先创建本地配置：
+| Template → local file | Settings |
+|---|---|
+| [`framework/settings.example.yaml`](framework/settings.example.yaml) → `framework/settings.yaml` | Executor, optional Embedding, base Skills, request defaults, vector cache |
+| [`self_optimization/settings.example.yaml`](self_optimization/settings.example.yaml) → `self_optimization/settings.yaml` | Independent Policy, revision checks, working-copy and output location |
+| [`self_optimization/task_flow.example.yaml`](self_optimization/task_flow.example.yaml) → `self_optimization/task_flow.yaml` | Group, shuffle seed, Task feedback and validation sample limits |
 
-```powershell
-Copy-Item framework/settings.example.yaml framework/settings.yaml
+Set the model IDs and endpoints to those offered by your service. Use `api_key_env` for a credential supplied through your shell or secret manager, with `api_key: null`; the templates reference `VVEAI_API_KEY`. Local configuration files are Git-ignored. Executor and Policy support OpenAI-compatible Chat Completions and Anthropic Messages. Embedding supports OpenAI-compatible endpoints or local Sentence Transformers; the template selects local BGE embeddings.
+
+YAML paths resolve relative to the file containing them; CLI `--group` and `--config` paths resolve from the current directory. Local BGE, BGE reranker, GPT-2 evaluation weights, and NLTK resources may need downloading on first use. See [configuration, dependencies, and troubleshooting](docs/DEVELOPMENT.docx).
+
+## Validate and run
+
+Validate data without local configuration, model clients, or a run directory:
+
+```sh
+python -B -m self_optimization --group data/groups/hotpotqa-train-001 --validate-only
 ```
 
-在 `framework/settings.yaml` 中配置 Executor API。该文件已加入 `.gitignore`，不得提交真实密钥。模板默认从 `VVEAI_API_KEY` 环境变量读取密钥，也可以仅在被忽略的本地配置中使用 `api_key`。
+Validate the configured pipeline and an intended selection without model calls:
 
-`skills.root` 指向三个类型目录的共同父目录。它相对配置文件所在的 `framework/` 目录解析，因此当前值为 `skills`，对应 `framework/skills/`；框架会继续从其下的 `manage/`、`agentic/`、`components/` 发现 Skill。
-
-## 运行 Demo
-
-```powershell
-python -B run_demo.py
+```sh
+python -B -m self_optimization --config self_optimization/task_flow.yaml --group data/groups/hotpotqa-train-001 --max-tasks 2 --examples-per-task 2 --validate-only
 ```
 
-入口从 `framework/settings.yaml` 读取 HotpotQA demo 路径、运行条数、请求参数、最终结果路径与中间日志路径，自动完成三级选择、检索、生成及检索/生成测评。检索侧输出 F1@1、Top-n F1（n 为该题 golden 文档数）、MRR、Hit@1、Hit@10、MAP、NDCG、DCG、IDCG；生成侧输出 ChrF、ChrF++、METEOR、R1、R2、RL、PPL、CER、WER，不使用生成 EM/F1。
+This checks configuration structure, paths, data, and selection. Service connectivity and model quality are assessed in separate model-enabled runs. The full Group is still validated. `group` describes the complete data; `selection` describes the chosen Task/QA IDs and counts. In data-only validation, Group fields appear at the top level.
 
-- 每题预测、单题指标和截至当前题的累计宏平均默认打印到命令行；完整结果写入 `demo.output.result_path`。
-- Manage、Agentic、Components、编译、执行和测评事件写入 `demo.output.log_path`。
-- `demo.select_skills_per_example: true` 为每题独立选择 Skill；设为 `false` 时整批问题只选择和编译一次并复用。
-- 批次选择只发送共享语料统计和均匀抽样的问题文本；`demo.batch_selection_query_sample_size` 控制抽样数，默认 20。
-- Vector Retriever 首次运行构建磁盘索引，后续运行直接从 `runtime.vector_index.cache_dir` 加载；缓存由语料、Embedding 配置和文本格式自动失效。
-- `python -B run_demo.py --limit 5` 可临时运行 5 条样本。
-- 安装后也可使用 `ragskill-demo`。
+After configuring services, run the smallest Task workflow (one QA, followed by one optimization event):
 
-默认 demo 包含 100 个 HotpotQA 问题和 2000 篇共享文档。原始大型 Parquet 不提交到仓库，已派生的 `corpus.jsonl` 与 `test.jsonl` 会随仓库提供。
-
-## 测试
-
-```powershell
-python -B -m pytest -p no:cacheprovider
-python -B -m ruff check --no-cache framework tests data/TriviaQA experiments/hotpotqa/scripts experiments/triviaqa/scripts run_demo.py
+```sh
+python -B -m self_optimization --group data/groups/hotpotqa-train-001 --max-tasks 1 --examples-per-task 1
 ```
 
-## 目录
+This invokes real models and may invoke the Executor again for revision verification. For a full Group, remove both limits:
 
-```text
-.
-|-- framework/
-|   |-- skills/                 # 真正的 Agent Skills
-|   |   |-- manage/             # 高层任务分析与 Agentic Skill 选择
-|   |   |-- agentic/            # RAG workflow 与抽象组件槽位
-|   |   `-- components/         # Retriever、Generator 等原子实现
-|   |-- evaluation/             # XRAG 对齐的检索与生成指标
-|   |-- settings.example.yaml   # 可提交配置模板
-|   |-- selection.py            # 三级 LLM 选择
-|   |-- compiler.py             # workflow 与组件绑定
-|   `-- demo.py                 # 配置驱动 demo 入口
-|-- experiments/hotpotqa/
-|   |-- data/demo/              # 小型可提交 demo 数据
-|   `-- scripts/build_demo.py   # 可复现数据构建脚本
-|-- data/task_flow/             # 多数据集规范 task JSONL 与来源 manifest
-|-- self_optimization/          # 逐样本和多 task Skill 副本自优化
-|-- tests/
-|-- run_demo.py
-|-- run_self_optimization.py
-|-- run_task_flow.py
-|-- requirements.txt
-`-- pyproject.toml
+```sh
+python -B -m self_optimization --group data/groups/hotpotqa-train-001
 ```
 
-更完整的接口和 Skill 包规范见 `framework/SPEC.md`。
+Switch datasets by changing only the Group path:
+
+```sh
+python -B -m self_optimization --group data/groups/2wiki-train-001
+python -B -m self_optimization --group data/groups/triviaqa-train-001
+```
+
+Use `--shuffle-seed` to override Corpus order, `--config` for another task-flow configuration, and `--run-id` for a new, unique run name. Each Group invocation starts a fresh Skill copy; revisions are inherited across Tasks within that run.
+
+All CLI entrypoints use the same Group/Task runner: `python -m self_optimization`, `python run_self_optimization.py`, `python run_task_flow.py`, `ragskill-self-optimize`, and `ragskill-task-flow`. Reinstall editable metadata after updating an older checkout to refresh console entrypoints.
+
+## Python API
+
+```python
+from self_optimization import (
+    load_task_workflow_config,
+    run_self_optimization,
+    validate_task_workflow,
+)
+
+config = load_task_workflow_config(
+    "self_optimization/task_flow.yaml",
+    group_path="data/groups/hotpotqa-train-001",
+)
+selection = validate_task_workflow(config, max_tasks=1, examples_per_task=1)
+report = run_self_optimization(config, max_tasks=1, examples_per_task=1)
+print(report["group"]["group_id"], report["completed_tasks"])
+```
+
+`run_self_optimization` aliases `run_task_workflow`; both accept `TaskWorkflowConfig`. The legacy per-sample runner is `run_sample_optimization`. For integration below the Task runner, `framework` exports `load_group`, `DataGroup` / `GroupTask` / `GroupQA`, `build_rag_request`, `select_rag_plan`, `compile_rag_command`, `run_rag`, `run_rag_from_config`, and evaluation helpers. See the [API and data contracts](docs/DEVELOPMENT.docx).
+
+## Included Skills
+
+The library contains **1 Manage, 5 Agentic, and 7 Component Skills**. Links lead to each package; the [complete technical reference](docs/TECHNICAL_DESIGN.docx) documents inputs, outputs, parameters, dependencies, model calls, and stopping conditions.
+
+| Layer | Skill | Function |
+|---|---|---|
+| Manage | [`manage-rag-default`](framework/skills/manage/manage-rag-default) | Produce guidance for selecting an Agentic workflow. |
+| Agentic | [`agentic-sequential-skill`](framework/skills/agentic/agentic-sequential-skill) | Optional rewrite → one retriever → optional rerank → generate. |
+| Agentic | [`agentic-parallel-rag`](framework/skills/agentic/agentic-parallel-rag) | Combine multiple retrieval branches with reciprocal-rank fusion. |
+| Agentic | [`agentic-conditional-rag`](framework/skills/agentic/agentic-conditional-rag) | Route to lexical, semantic, or fused retrieval. |
+| Agentic | [`agentic-iterative-rag`](framework/skills/agentic/agentic-iterative-rag) | Accumulate evidence, generate, and critique until approved or a stop condition is reached. |
+| Agentic | [`agentic-hybrid-rag`](framework/skills/agentic/agentic-hybrid-rag) | Route by complexity to no retrieval, one retrieval step, or bounded iterative retrieval. |
+| Component | [`component-bm25-retriever`](framework/skills/components/component-bm25-retriever) | Field-aware BM25 over titles and bodies, with shared in-memory preprocessing. |
+| Component | [`component-vector-retriever`](framework/skills/components/component-vector-retriever) | Dense cosine retrieval using the injected Embedding client and reusable indexes. |
+| Component | [`component-bge-reranker`](framework/skills/components/component-bge-reranker) | Local BGE CrossEncoder reranking of retrieved candidates. |
+| Component | [`component-hyde-rewriter`](framework/skills/components/component-hyde-rewriter) | Generate one hypothetical document through the Executor; requires a Vector Retriever binding. |
+| Component | [`component-classifier`](framework/skills/components/component-classifier) | Executor-based retrieval-mode or question-complexity classification. |
+| Component | [`component-grounded-generator`](framework/skills/components/component-grounded-generator) | Generate an answer with the Executor using supplied evidence. |
+| Component | [`component-critic`](framework/skills/components/component-critic) | Ask the Executor to judge answer support and report evidence gaps. |
+
+## Outputs and repository layout
+
+With the supplied templates, outputs are stored beside the repository under `../Preparation/runtime/`:
+
+| Location | Contents |
+|---|---|
+| `runs/<run-id>/task-flow.report.json` | Group/selection metadata, QA results, metrics, Task summaries, optimization outcomes |
+| `runs/<run-id>/task-flow.events.jsonl` | Incremental workflow, Task, QA, and optimization events |
+| `runs/<run-id>/skills/` and `workspace.json` | Current working Skill copy and source identity |
+| `runs/<run-id>/optimizer_calls/task-XXXX/` | Policy prompts, responses, attempts, proposal, and outcome |
+| `runs/<run-id>/revisions/revision-XXXX/` | Before snapshot, proposal, validation outcome, and diff when application succeeds |
+| `vector-indexes/<cache-key>/` | Persistent `manifest.json` and `vectors.npy` |
+
+BM25 preprocessing and query embeddings are cached in memory; vector document indexes can also survive process restarts. Exact reuse and invalidation rules are in the [technical design](docs/TECHNICAL_DESIGN.docx).
+
+The repository contains runtime code (`framework/`, `self_optimization/`), executable Skills, configuration templates, final Group data, and documentation. Preparation scripts, tests, raw sources, backups, and intermediate outputs belong outside the repository. **Running the project does not import code from `Preparation`.** Offline tests with substitute models check contracts and control flow; model-enabled experiments assess real-model effectiveness separately. Maintenance and extension instructions are in the [development guide](docs/DEVELOPMENT.docx); implementation details are in the [technical design](docs/TECHNICAL_DESIGN.docx).

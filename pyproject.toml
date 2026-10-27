@@ -15,8 +15,7 @@ dependencies = [
 ]
 
 [project.scripts]
-ragskill-demo = "framework.demo:main"
-ragskill-self-optimize = "self_optimization.runner:main"
+ragskill-self-optimize = "self_optimization.task_flow:main"
 ragskill-task-flow = "self_optimization.task_flow:main"
 
 [project.optional-dependencies]
@@ -31,15 +30,8 @@ evaluation = [
     "torch>=2.3",
     "transformers>=4.42,<5",
 ]
-experiment = [
-    "datasets>=3.0",
-    "pyarrow>=15.0",
-]
 rerank = [
     "sentence-transformers>=3.0",
-]
-test = [
-    "pytest>=8.0",
 ]
 
 [tool.setuptools.packages.find]
@@ -58,10 +50,4 @@ framework = [
 self_optimization = [
     "settings.example.yaml",
     "task_flow.example.yaml",
-    "task_flow.2wiki.example.yaml",
 ]
-
-[tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["."]
-addopts = "-q"

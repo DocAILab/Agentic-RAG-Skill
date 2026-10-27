@@ -1,0 +1,233 @@
+{
+  "build": {
+    "base_policy": "reference_only",
+    "corpus_order": "canonical document ID",
+    "distractor_policy": "original selected-QA nonreferences first, remaining inventory documents second; each pool sorted by seeded content-ID hash",
+    "gzip_mtime": 0,
+    "qa_order": "sha256(seed:qa-order:qa_id)",
+    "qa_selection": "source-prefix-independent-qa",
+    "seed": 42,
+    "statistics": {
+      "excluded_original_nonreference_count": 0,
+      "label_type_counts": {
+        "supporting_facts": 1000
+      },
+      "normalized_document_occurrences": 99276,
+      "normalized_qa_scanned": 10000,
+      "normalized_unique_documents": 46425,
+      "retained_original_nonreference_count": 3537,
+      "selected_qa_original_context_count": 5848,
+      "selected_qa_original_nonreference_count": 3537,
+      "selected_qa_original_reference_count": 2311,
+      "supplemental_distractor_count": 152
+    }
+  },
+  "corpus": {
+    "distractor_count": 3689,
+    "document_count": 6000,
+    "files": [
+      {
+        "bytes": 477219,
+        "path": "corpus/part-0000.jsonl.gz",
+        "records": 2000,
+        "sha256": "011b2d1d13d569a666db191d19c6eece1e12c89edc405f0c886adb065ee35e64"
+      },
+      {
+        "bytes": 484518,
+        "path": "corpus/part-0001.jsonl.gz",
+        "records": 2000,
+        "sha256": "c2340a87081a258e02cb61f446a447b028b72cfdf438906d9411a76b6f8af7f2"
+      },
+      {
+        "bytes": 476354,
+        "path": "corpus/part-0002.jsonl.gz",
+        "records": 2000,
+        "sha256": "70e38fb1b73622f9050ce9876b4669723db20505f596c58bebf9a3e130cc78d7"
+      }
+    ],
+    "fingerprint": "e7343184440fa4ab42b54bd86e9e76448b117792e21de77ace010cf2a8a92763",
+    "identity": "sha256(compact UTF-8 JSON [stripped title, whitespace-normalized text])",
+    "origin_counts": {
+      "qa_context": 5848,
+      "supplement": 152
+    },
+    "reference_count": 2311,
+    "target_size": 6000,
+    "text_unit": "original unchunked source passage/page",
+    "unit": "document"
+  },
+  "dataset": "2wikimultihopqa",
+  "group_id": "2wiki-train-001",
+  "labels": {
+    "distractor_definition": "not annotated as a reference for any selected QA; semantic irrelevance is not guaranteed",
+    "reference_definition": "union of selected QA relevant_document_ids under the source annotation convention",
+    "scope": "source-provided evidence for each selected QA; not exhaustive relevance judgments over the Group corpus",
+    "weak_label_rule": null,
+    "weak_labels": false
+  },
+  "qa_count": 1000,
+  "qa_per_task": 50,
+  "runtime": {
+    "document_fields": [
+      "id",
+      "title",
+      "text"
+    ],
+    "hide_offline_annotations": true,
+    "retrieval_scope": "group"
+  },
+  "schema_version": 1,
+  "source": {
+    "dataset": "2wikimultihopqa",
+    "normalization": "nonempty question, answers, documents and annotated references; unique source QA IDs; title stripped and document text whitespace-normalized",
+    "normalized_input_qa_count": 10000,
+    "normalized_input_sha256": "5698d6476f6fab6e32faf69a4e80437788741bf5433b2370239ff1c28689288b",
+    "repository": "xanhho/2WikiMultihopQA",
+    "revision": "612bc5039a457880d9e7d84c3b0a4cf154b70e4f",
+    "selection": "first independent QA in the prepared pinned-source inventory; deterministic seeded Task ordering",
+    "split": "train"
+  },
+  "task_count": 20,
+  "tasks": [
+    {
+      "bytes": 28486,
+      "path": "tasks/task-0001.jsonl",
+      "qa_count": 50,
+      "sha256": "ffe09cfaedb2ef0910f889540018c8e88d44b07c7b50ba310064837a5c930010",
+      "task_id": "task-0001"
+    },
+    {
+      "bytes": 25993,
+      "path": "tasks/task-0002.jsonl",
+      "qa_count": 50,
+      "sha256": "4beafd02ad25065eb5cfe1636babe07e3840991b22c4e022212b79414a1736e9",
+      "task_id": "task-0002"
+    },
+    {
+      "bytes": 26896,
+      "path": "tasks/task-0003.jsonl",
+      "qa_count": 50,
+      "sha256": "7ae41bc23344189207c55ee7d1b9e54d9854f307042e3574b406941967e9baea",
+      "task_id": "task-0003"
+    },
+    {
+      "bytes": 28984,
+      "path": "tasks/task-0004.jsonl",
+      "qa_count": 50,
+      "sha256": "f4a0e3998025f94f6898a22de0f17041bf7c6b1dacf665296b94a80bec47a64c",
+      "task_id": "task-0004"
+    },
+    {
+      "bytes": 27220,
+      "path": "tasks/task-0005.jsonl",
+      "qa_count": 50,
+      "sha256": "f85d0a55ab2e237f39ba72b63ab1200b26919f9bab65b6b8ac04f3a63dc5de80",
+      "task_id": "task-0005"
+    },
+    {
+      "bytes": 27980,
+      "path": "tasks/task-0006.jsonl",
+      "qa_count": 50,
+      "sha256": "ca5f18ce831221cfc687e10676c7e671b7a2a368f2c7b33773d77ce8b338e724",
+      "task_id": "task-0006"
+    },
+    {
+      "bytes": 28363,
+      "path": "tasks/task-0007.jsonl",
+      "qa_count": 50,
+      "sha256": "bf8a27cfed6e2cb4f3cd4b8d824ca35b78a7286a083f714e8e1dcad4e0793683",
+      "task_id": "task-0007"
+    },
+    {
+      "bytes": 27163,
+      "path": "tasks/task-0008.jsonl",
+      "qa_count": 50,
+      "sha256": "16beadf51cf56b0b75e5ecb7aa1821ce587e13b329ec05bc4ba45fc97f0ff054",
+      "task_id": "task-0008"
+    },
+    {
+      "bytes": 27379,
+      "path": "tasks/task-0009.jsonl",
+      "qa_count": 50,
+      "sha256": "e7a78a4b465847b2485f09f305f2cbfd753c10268ddaf58861501a9f1e49e865",
+      "task_id": "task-0009"
+    },
+    {
+      "bytes": 27012,
+      "path": "tasks/task-0010.jsonl",
+      "qa_count": 50,
+      "sha256": "9ce8195167ef4d629c9afeb5b2124057e9ba2cca9dda3845b4f52f79ad8e9f8b",
+      "task_id": "task-0010"
+    },
+    {
+      "bytes": 27327,
+      "path": "tasks/task-0011.jsonl",
+      "qa_count": 50,
+      "sha256": "0b727b48a9b9266b1b0e4011f8a6f17c24becc02c596621ba60ae139761858e2",
+      "task_id": "task-0011"
+    },
+    {
+      "bytes": 27321,
+      "path": "tasks/task-0012.jsonl",
+      "qa_count": 50,
+      "sha256": "81a6324a7abea663404db2aac25e1b78cd3f3e38da4dedeb736484db5881b5fc",
+      "task_id": "task-0012"
+    },
+    {
+      "bytes": 27578,
+      "path": "tasks/task-0013.jsonl",
+      "qa_count": 50,
+      "sha256": "041576901227ef414f9792d4217fbde1e20c68c37e0307819c26ec86d264f0b1",
+      "task_id": "task-0013"
+    },
+    {
+      "bytes": 28045,
+      "path": "tasks/task-0014.jsonl",
+      "qa_count": 50,
+      "sha256": "f1de37cff114973555c6559dbb65ce9d32530093f23b0cd1693b9cc3c64db1c9",
+      "task_id": "task-0014"
+    },
+    {
+      "bytes": 27137,
+      "path": "tasks/task-0015.jsonl",
+      "qa_count": 50,
+      "sha256": "9bb2c82e87c93b1405cf88eb1e3304552566b927f52e096f7e850f68ddac07ec",
+      "task_id": "task-0015"
+    },
+    {
+      "bytes": 27511,
+      "path": "tasks/task-0016.jsonl",
+      "qa_count": 50,
+      "sha256": "df685141884a8749ceeb01b1cd2f59c2b4dc26a3de8df691ae04685a64ea6db8",
+      "task_id": "task-0016"
+    },
+    {
+      "bytes": 27500,
+      "path": "tasks/task-0017.jsonl",
+      "qa_count": 50,
+      "sha256": "cb9505eb96e5cb1ef3c786d1d31a0158cd03126982a43130a473707f1e671b4a",
+      "task_id": "task-0017"
+    },
+    {
+      "bytes": 26669,
+      "path": "tasks/task-0018.jsonl",
+      "qa_count": 50,
+      "sha256": "f5bc65b45ca7a49190bc5e667b897294729d0767a5c17f346d4535ca18101d54",
+      "task_id": "task-0018"
+    },
+    {
+      "bytes": 27862,
+      "path": "tasks/task-0019.jsonl",
+      "qa_count": 50,
+      "sha256": "ae16b4b2a9061a3ae26e199ee0a4b1c8cbcd7d6649a9bfaf81420a5cc0e68125",
+      "task_id": "task-0019"
+    },
+    {
+      "bytes": 27863,
+      "path": "tasks/task-0020.jsonl",
+      "qa_count": 50,
+      "sha256": "ce2289e785ad155254189eef4fcb5a15e34f94cffe687ebfdf70c9396e91caa2",
+      "task_id": "task-0020"
+    }
+  ]
+}

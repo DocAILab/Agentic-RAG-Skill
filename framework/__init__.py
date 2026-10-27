@@ -21,7 +21,8 @@ from .compiler import (
     run_compiled_rag,
     run_rag,
 )
-from .interfaces import ComponentContext, ComponentInvoker
+from .data_groups import DataGroup, GroupDataError, GroupQA, GroupTask, load_group
+from .interfaces import ComponentContext, ComponentInvoker, RAGRequest, build_rag_request
 from .demo import DemoError, run_demo
 from .evaluation import (
     EvaluationError,
@@ -99,6 +100,7 @@ __all__ = [
     "CompiledRAGCommand",
     "ComponentStageResult",
     "ConfigError",
+    "DataGroup",
     "DemoConfig",
     "DemoError",
     "AnthropicModelClient",
@@ -113,6 +115,9 @@ __all__ = [
     "GenerationEvaluator",
     "GenerationMetricError",
     "GenerationMetrics",
+    "GroupDataError",
+    "GroupQA",
+    "GroupTask",
     "FrameworkConfig",
     "VectorIndexConfig",
     "ModelAPIError",
@@ -125,6 +130,7 @@ __all__ = [
     "RuntimeSpec",
     "RuntimeComponentContext",
     "RAGSelectionPlan",
+    "RAGRequest",
     "RetrievalMetrics",
     "SelectionSpec",
     "SelectionError",
@@ -153,12 +159,14 @@ __all__ = [
     "summarize_metrics",
     "XRAGGenerationEvaluator",
     "create_embedding_client",
+    "build_rag_request",
     "create_clients_from_config",
     "embedding_service_fingerprint",
     "compile_rag_command",
     "create_model_client",
     "load_runtime_callable",
     "load_framework_config",
+    "load_group",
     "load_spec",
     "run_manage_stage",
     "run_compiled_rag",

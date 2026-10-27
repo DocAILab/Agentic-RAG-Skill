@@ -1,6 +1,6 @@
-"""从 self_optimization/settings.yaml 启动 Skill 副本自优化实验。"""
+"""运行一个 Group 的逐 Task Skill 自优化。"""
 
-from self_optimization.runner import main
+from self_optimization.task_flow import main
 
 
 if __name__ == "__main__":

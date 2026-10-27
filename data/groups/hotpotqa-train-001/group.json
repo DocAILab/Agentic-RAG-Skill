@@ -1,0 +1,233 @@
+{
+  "build": {
+    "base_policy": "reference_only",
+    "corpus_order": "canonical document ID",
+    "distractor_policy": "original selected-QA nonreferences first, remaining inventory documents second; each pool sorted by seeded content-ID hash",
+    "gzip_mtime": 0,
+    "qa_order": "sha256(seed:qa-order:qa_id)",
+    "qa_selection": "source-prefix-independent-qa",
+    "seed": 42,
+    "statistics": {
+      "excluded_original_nonreference_count": 3758,
+      "label_type_counts": {
+        "supporting_facts": 1000
+      },
+      "normalized_document_occurrences": 99410,
+      "normalized_qa_scanned": 10000,
+      "normalized_unique_documents": 87251,
+      "retained_original_nonreference_count": 4023,
+      "selected_qa_original_context_count": 9758,
+      "selected_qa_original_nonreference_count": 7781,
+      "selected_qa_original_reference_count": 1977,
+      "supplemental_distractor_count": 0
+    }
+  },
+  "corpus": {
+    "distractor_count": 4023,
+    "document_count": 6000,
+    "files": [
+      {
+        "bytes": 615844,
+        "path": "corpus/part-0000.jsonl.gz",
+        "records": 2000,
+        "sha256": "aaa2d611a218a852ee18a9651718ad2af7e7ed8bdafffeeb3a2145e44356cb36"
+      },
+      {
+        "bytes": 607514,
+        "path": "corpus/part-0001.jsonl.gz",
+        "records": 2000,
+        "sha256": "1aeea7ac1a04574bada1999541bed03f1c01f634c1ea7c350989a16db51128e8"
+      },
+      {
+        "bytes": 608858,
+        "path": "corpus/part-0002.jsonl.gz",
+        "records": 2000,
+        "sha256": "d8fbb219fab2a6625df5d3154418201d275032ed94b709e028bd8da097fb2943"
+      }
+    ],
+    "fingerprint": "ffe364bc4a92292354c17568f649b21fbc37c0ef4481de118f7dceb46a6f07d5",
+    "identity": "sha256(compact UTF-8 JSON [stripped title, whitespace-normalized text])",
+    "origin_counts": {
+      "qa_context": 6000
+    },
+    "reference_count": 1977,
+    "target_size": 6000,
+    "text_unit": "original unchunked source passage/page",
+    "unit": "document"
+  },
+  "dataset": "hotpotqa",
+  "group_id": "hotpotqa-train-001",
+  "labels": {
+    "distractor_definition": "not annotated as a reference for any selected QA; semantic irrelevance is not guaranteed",
+    "reference_definition": "union of selected QA relevant_document_ids under the source annotation convention",
+    "scope": "source-provided evidence for each selected QA; not exhaustive relevance judgments over the Group corpus",
+    "weak_label_rule": null,
+    "weak_labels": false
+  },
+  "qa_count": 1000,
+  "qa_per_task": 50,
+  "runtime": {
+    "document_fields": [
+      "id",
+      "title",
+      "text"
+    ],
+    "hide_offline_annotations": true,
+    "retrieval_scope": "group"
+  },
+  "schema_version": 1,
+  "source": {
+    "configuration": "distractor",
+    "dataset": "hotpotqa",
+    "normalization": "nonempty question, answers, documents and annotated references; unique source QA IDs; title stripped and document text whitespace-normalized",
+    "normalized_input_qa_count": 10000,
+    "normalized_input_sha256": "b1897b521b1eb6e57b2334f56721209fda237b59e9c4cc8aad5c701bd7775f1e",
+    "repository": "hotpotqa/hotpot_qa",
+    "revision": "1908d6afbbead072334abe2965f91bd2709910ab",
+    "selection": "first independent QA in the prepared pinned-source inventory; deterministic seeded Task ordering",
+    "split": "train"
+  },
+  "task_count": 20,
+  "tasks": [
+    {
+      "bytes": 25637,
+      "path": "tasks/task-0001.jsonl",
+      "qa_count": 50,
+      "sha256": "a8f5dd1143d46ad048f9ca9456d0549529a4a6a7f37b3249f099d3cec9a04339",
+      "task_id": "task-0001"
+    },
+    {
+      "bytes": 26391,
+      "path": "tasks/task-0002.jsonl",
+      "qa_count": 50,
+      "sha256": "3face22746066ba274f55eb0b035c20ad4aeb2e833ada32deefd9b1d7d979ec2",
+      "task_id": "task-0002"
+    },
+    {
+      "bytes": 26226,
+      "path": "tasks/task-0003.jsonl",
+      "qa_count": 50,
+      "sha256": "f9e650253e8819c72f9e25532e2d8370834c26e7ab55bb7a93382f580ef2536b",
+      "task_id": "task-0003"
+    },
+    {
+      "bytes": 27064,
+      "path": "tasks/task-0004.jsonl",
+      "qa_count": 50,
+      "sha256": "5b62d267cf2d044b719f31f6b296d9e09e26002bee987992aa44c18be06150f4",
+      "task_id": "task-0004"
+    },
+    {
+      "bytes": 26585,
+      "path": "tasks/task-0005.jsonl",
+      "qa_count": 50,
+      "sha256": "54d481c034d113116a1ffccc9cba51329d6fa336b39ab61e8a972facccd249dd",
+      "task_id": "task-0005"
+    },
+    {
+      "bytes": 25578,
+      "path": "tasks/task-0006.jsonl",
+      "qa_count": 50,
+      "sha256": "eb3002eea717ea79e590d01d084e13612042e06226c9845e3349a3d747db271d",
+      "task_id": "task-0006"
+    },
+    {
+      "bytes": 26373,
+      "path": "tasks/task-0007.jsonl",
+      "qa_count": 50,
+      "sha256": "8df95c0df99f808fae6fb1b11e7f8d085dcbe32352c2b9338fd70eb53769c9a8",
+      "task_id": "task-0007"
+    },
+    {
+      "bytes": 26364,
+      "path": "tasks/task-0008.jsonl",
+      "qa_count": 50,
+      "sha256": "08038fa1028fe5114a5842ae094f7f12aadd52cd93d8b5be18346685d21e0bf2",
+      "task_id": "task-0008"
+    },
+    {
+      "bytes": 26129,
+      "path": "tasks/task-0009.jsonl",
+      "qa_count": 50,
+      "sha256": "18506f9aee17e9ff8ac43deef35a12fbcb5874bb81c6a9cd0e4354833bb2b0d8",
+      "task_id": "task-0009"
+    },
+    {
+      "bytes": 25934,
+      "path": "tasks/task-0010.jsonl",
+      "qa_count": 50,
+      "sha256": "134413e77636bb4df4ba3adc1e93f328843e0c5d388035547fe93cbe40dfe68c",
+      "task_id": "task-0010"
+    },
+    {
+      "bytes": 26124,
+      "path": "tasks/task-0011.jsonl",
+      "qa_count": 50,
+      "sha256": "8d3614c23a9397e2afac2e57e351ae400f9149e8cfa564ee79db51b63afc41a3",
+      "task_id": "task-0011"
+    },
+    {
+      "bytes": 25417,
+      "path": "tasks/task-0012.jsonl",
+      "qa_count": 50,
+      "sha256": "80776d8295551c593893765b858be9f3981f422026598ddcec76081a3b068a00",
+      "task_id": "task-0012"
+    },
+    {
+      "bytes": 26618,
+      "path": "tasks/task-0013.jsonl",
+      "qa_count": 50,
+      "sha256": "f821a1532b732318dde0241e3806c73f1a421adfafd7123b786d024aeb85861d",
+      "task_id": "task-0013"
+    },
+    {
+      "bytes": 25656,
+      "path": "tasks/task-0014.jsonl",
+      "qa_count": 50,
+      "sha256": "64028bfd0b780a718bbc40a1e146e9bbb58a27606bab1eac38042f9ed42cc696",
+      "task_id": "task-0014"
+    },
+    {
+      "bytes": 26296,
+      "path": "tasks/task-0015.jsonl",
+      "qa_count": 50,
+      "sha256": "9e053a1d947d5f73b2fa466f491c1183a2621c1a6a454e9d026c64dc4887ceb8",
+      "task_id": "task-0015"
+    },
+    {
+      "bytes": 26565,
+      "path": "tasks/task-0016.jsonl",
+      "qa_count": 50,
+      "sha256": "42f1cff0e96532e7b90b42130b3993e4132ca2bd00a0e48e95c793edfeb99968",
+      "task_id": "task-0016"
+    },
+    {
+      "bytes": 26208,
+      "path": "tasks/task-0017.jsonl",
+      "qa_count": 50,
+      "sha256": "45b6dd135c70e5146b78b5f074e52014fe1413b5c84010bb65a4bdaf3d182a1c",
+      "task_id": "task-0017"
+    },
+    {
+      "bytes": 26459,
+      "path": "tasks/task-0018.jsonl",
+      "qa_count": 50,
+      "sha256": "5d1b2c4e14d3f55605b21449fa9cefd6f857c5ff2b9556131be30e37225fca28",
+      "task_id": "task-0018"
+    },
+    {
+      "bytes": 25724,
+      "path": "tasks/task-0019.jsonl",
+      "qa_count": 50,
+      "sha256": "a89021adfa5293e702283b119033370f682270ca6b4353f1feaeaea6316dd6f5",
+      "task_id": "task-0019"
+    },
+    {
+      "bytes": 26533,
+      "path": "tasks/task-0020.jsonl",
+      "qa_count": 50,
+      "sha256": "47a1f1e9da02880d5d219d2b14e6eee9b99abc255d896ccfcd527f8ce8e61fd3",
+      "task_id": "task-0020"
+    }
+  ]
+}

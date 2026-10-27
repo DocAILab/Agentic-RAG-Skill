@@ -1,23 +1,43 @@
 """基于注入式向量服务的具体 Vector Retriever Component。"""
 
+import hashlib
 import math
+from pathlib import Path
 
 DEFAULT_QUERY_INSTRUCTION = (
     "Represent this sentence for searching relevant passages:"
 )
 TEXT_FORMAT_VERSION = "component-vector-retriever:title-text:v1"
+_MODULE_FINGERPRINT = hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 
 
 def run(inputs, context):
     """编码查询与文档，按余弦相似度返回前 top_k 个结果。"""
     query = str(inputs.get("query", "")).strip()
-    documents = [dict(document) for document in inputs.get("documents", ())]
+    documents = inputs.get("documents", ())
+    if not isinstance(documents, (list, tuple)):
+        documents = tuple(documents)
     top_k = int(inputs.get("top_k", 10))
     if top_k <= 0 or not documents or not query:
         return {"documents": []}
 
     instruction = str(inputs.get("query_instruction", DEFAULT_QUERY_INSTRUCTION)).strip()
     query_text = f"{instruction} {query}".strip()
+    shared_search = getattr(context, "search_corpus_vectors", None)
+    if callable(shared_search):
+        ranked = shared_search(
+            documents=documents,
+            query_text=query_text,
+            top_k=top_k,
+            text_format_version=f"{TEXT_FORMAT_VERSION}:{_MODULE_FINGERPRINT}",
+            text_formatter=_document_text,
+        )
+        if ranked is not None:
+            return {
+                "documents": [
+                    dict(documents[index], score=float(score)) for index, score in ranked
+                ]
+            }
     index_search = getattr(context, "search_vector_index", None)
     if callable(index_search) and all(
         document.get("embedding") is None for document in documents
