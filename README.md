@@ -1,8 +1,12 @@
-# Agentic RAG Skill
+<p align="center">
+  <img src="docs/assets/xragos-logo.png" width="200" alt="XRAGOS logo">
+</p>
+
+<h1 align="center">XRAGOS</h1>
 
 [English](README.md) · [简体中文](README.zh-CN.md)
 
-Agentic RAG Skill is a framework for adapting retrieval-augmented generation by **selecting and revising executable Skills**. A frozen **Executor Model** selects a workflow for each question and powers its language-model components. A separately configured **Policy Model** uses Task-level feedback to revise one participating Skill in an isolated working copy. Later Tasks use the accepted revisions; model weights are never updated.
+XRAGOS is a framework for adapting retrieval-augmented generation by **selecting and revising executable Skills**. A frozen **Executor Model** selects a workflow for each question and powers its language-model components. A separately configured **Policy Model** uses Task-level feedback to revise one participating Skill in an isolated working copy. Later Tasks use the accepted revisions; model weights are never updated.
 
 [Development guide (中文 Word)](docs/DEVELOPMENT.docx) · [Technical design and full Skill reference (中文 Word)](docs/TECHNICAL_DESIGN.docx) · [Data format (中文)](data/README.md)
 
@@ -22,15 +26,17 @@ After each completed Task, all selected QA contribute metrics to one optimizatio
 
 Each Group owns one shared Corpus and an ordered sequence of Tasks. Every QA receives the **complete Group Corpus** as its retrieval scope, including when a run is limited to a few QA; a workflow may choose to skip retrieval.
 
-| Published Group | Tasks × QA | Corpus documents | Reference | Distractor |
+| Dataset | Groups | Unique train QA covered | QA occurrences | References per Group |
 |---|---:|---:|---:|---:|
-| [`hotpotqa-train-001`](data/groups/hotpotqa-train-001/group.json) | 20 × 50 | 6,000 | 1,977 | 4,023 |
-| [`2wiki-train-001`](data/groups/2wiki-train-001/group.json) | 20 × 50 | 6,000 | 2,311 | 3,689 |
-| [`triviaqa-train-001`](data/groups/triviaqa-train-001/group.json) | 20 × 50 | 6,000 | 5,507 | 493 |
+| HotpotQA | 91 | 90,447 | 91,000 | 1,968–1,991 |
+| 2WikiMultihopQA | 168 | 167,454 | 168,000 | 1,917–3,546 |
+| TriviaQA RC | 102 | 76,220 | 102,000 | 973–6,000 |
+
+The release contains **361 Groups covering 334,121 unique valid training QA**, with 361,000 QA occurrences including cross-Group reuse. Every Group has **20 Tasks × 50 QA and 6,000 Corpus documents**. Group IDs and exact per-Group reference/distractor counts are listed in the [catalog](data/groups/catalog.json).
 
 All deduplicated references are retained before distractors fill the remaining capacity. Stored records preserve annotations for audit; runtime documents expose only `id`, `title`, and `text`, in a seeded shuffled order. Answers and gold document IDs stay on the evaluation/Policy-feedback side. HotpotQA and 2Wiki use supporting-fact labels; TriviaQA uses weak answer-alias labels. Corpus sets may overlap across Groups but are not identical. FinanceBench is not included.
 
-These sizes describe the published data, not framework limits. See the [data contract](data/README.md) and [catalog](data/groups/catalog.json) for provenance, hashes, and overlap counts.
+Sampling prioritizes uncovered QA, retains all of their references, and reuses capacity-compatible QA when needed to reach 1,000 questions without exceeding 6,000 documents. Each new Group has a distinct Corpus and records its selection policy; cross-Group QA and Corpus overlap are measured. The original three `*-train-001` packages are unchanged. These sizes describe the published data, not framework limits. See the [data contract](data/README.md) and [catalog](data/groups/catalog.json) for provenance, hashes, and overlap counts.
 
 ## Install and configure
 

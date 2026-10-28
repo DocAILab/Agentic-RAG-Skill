@@ -1,8 +1,12 @@
-# Agentic RAG Skill
+<p align="center">
+  <img src="docs/assets/xragos-logo.png" width="200" alt="XRAGOS 项目图标">
+</p>
+
+<h1 align="center">XRAGOS</h1>
 
 [English](README.md) · [简体中文](README.zh-CN.md)
 
-Agentic RAG Skill 通过**选择与修订可执行 Skill**，让检索增强生成流程适应不同问题和任务。冻结的 **Executor Model** 为每个问题选择工作流，并执行其中的语言模型组件；独立配置的 **Policy Model** 根据 Task 级反馈，在隔离工作副本中修订一个参与执行的 Skill。后续 Task 使用已接受的修订，模型权重保持不变。
+XRAGOS 通过**选择与修订可执行 Skill**，让检索增强生成流程适应不同问题和任务。冻结的 **Executor Model** 为每个问题选择工作流，并执行其中的语言模型组件；独立配置的 **Policy Model** 根据 Task 级反馈，在隔离工作副本中修订一个参与执行的 Skill。后续 Task 使用已接受的修订，模型权重保持不变。
 
 [开发文档 Word](docs/DEVELOPMENT.docx) · [技术设计与完整 Skill 说明 Word](docs/TECHNICAL_DESIGN.docx) · [数据格式](data/README.md)
 
@@ -22,15 +26,17 @@ Agentic RAG Skill 通过**选择与修订可执行 Skill**，让检索增强生�
 
 每个 Group 包含一份共享 Corpus 和一组有序 Task。每个 QA 的检索范围都是**完整 Group Corpus**，即使本次只运行少量 QA；工作流可以根据路线选择是否检索。
 
-| 已发布 Group | Task × QA | Corpus 文档数 | Reference | Distractor |
+| 数据集 | Group 数 | 覆盖的独立训练 QA | QA 总出现次数 | 每组 Reference 范围 |
 |---|---:|---:|---:|---:|
-| [`hotpotqa-train-001`](data/groups/hotpotqa-train-001/group.json) | 20 × 50 | 6,000 | 1,977 | 4,023 |
-| [`2wiki-train-001`](data/groups/2wiki-train-001/group.json) | 20 × 50 | 6,000 | 2,311 | 3,689 |
-| [`triviaqa-train-001`](data/groups/triviaqa-train-001/group.json) | 20 × 50 | 6,000 | 5,507 | 493 |
+| HotpotQA | 91 | 90,447 | 91,000 | 1,968–1,991 |
+| 2WikiMultihopQA | 168 | 167,454 | 168,000 | 1,917–3,546 |
+| TriviaQA RC | 102 | 76,220 | 102,000 | 973–6,000 |
+
+当前共 **361 个 Group，覆盖 334,121 条独立有效训练 QA**；计入跨 Group 复用后，共 361,000 条 QA。每组统一为 **20 个 Task × 50 个 QA、6,000 篇 Corpus**。各 Group ID 和准确的 reference/distractor 数量见 [catalog](data/groups/catalog.json)。
 
 构建时先保留全部去重 reference，再用 distractor 补足容量。离线文件保留标注以便审计；运行时文档只暴露 `id`、`title` 和 `text`，并按种子打乱顺序。答案和 gold 文档 ID 保留在评估与 Policy 反馈侧。HotpotQA 和 2Wiki 使用 supporting-fact 标签，TriviaQA 使用答案别名匹配得到的弱标签。不同 Group 的 Corpus 可以部分重叠，但完整集合不同；当前发布数据不包含 FinanceBench。
 
-表中规模是当前发布数据的参数。数据来源、哈希与重叠统计见[数据契约](data/README.md)和 [catalog](data/groups/catalog.json)。
+采样优先覆盖尚未使用的 QA，保留其全部 reference；必要时复用符合容量约束的 QA，把每组补足到 1,000 题。每个新 Group 的 Corpus 内容集合不同，并记录选样策略、QA 与语料重叠。原有三个 `*-train-001` 文件包保持不变。表中规模是当前发布数据的参数。数据来源、哈希与重叠统计见[数据契约](data/README.md)和 [catalog](data/groups/catalog.json)。
 
 ## 安装与配置
 

@@ -7,6 +7,7 @@ import os
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from threading import Lock
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -27,11 +28,29 @@ class ModelAPIError(RuntimeError):
         *,
         status_code: int | None = None,
         retryable: bool = False,
+        error_category: str | None = None,
+        provider_error_kind: str | None = None,
     ) -> None:
         """保存错误消息以及供请求层判断的 HTTP 状态与可重试标记。"""
         super().__init__(message)
         self.status_code = status_code
         self.retryable = retryable
+        self.error_category = error_category or ("http" if status_code is not None else "api")
+        self.provider_error_kind = provider_error_kind
+        self.attempt_count = 0
+        self.error_counts: dict[str, int] = {}
+
+
+_REQUEST_STAT_KEYS = (
+    "requests", "succeeded", "failed", "attempts", "retries",
+    "response_structure_errors", "provider_errors", "http_errors",
+    "transport_errors", "response_content_errors", "other_api_errors",
+)
+_ERROR_STAT_KEYS = {
+    "response_structure": "response_structure_errors",
+    "provider": "provider_errors", "http": "http_errors",
+    "transport": "transport_errors", "response_content": "response_content_errors",
+}
 
 
 class ModelClient(Protocol):
@@ -74,6 +93,10 @@ class OpenAICompatibleModelClient:
     extra_headers: Mapping[str, str] = field(default_factory=dict)
     extra_body: Mapping[str, Any] = field(default_factory=dict, repr=False)
     transport: JsonTransport | None = field(default=None, repr=False)
+    _request_counts: dict[str, int] = field(
+        default_factory=lambda: dict.fromkeys(_REQUEST_STAT_KEYS, 0), init=False, repr=False,
+    )
+    _statistics_lock: Any = field(default_factory=Lock, init=False, repr=False)
 
     def __post_init__(self) -> None:
         """补充默认 HTTP transport，并校验基础配置。"""
@@ -97,6 +120,19 @@ class OpenAICompatibleModelClient:
             )
         if self.transport is None:
             self.transport = _post_json
+
+    def request_statistics(self) -> dict[str, int]:
+        """Cumulative logical calls, transport attempts and disjoint error counts.
+
+        Retries retain the same request and are counted even when recovery succeeds.
+        This snapshot contains no prompts, responses, headers or credentials.
+        """
+        with self._statistics_lock:
+            return dict(self._request_counts)
+
+    def _record_request_stat(self, key: str) -> None:
+        with self._statistics_lock:
+            self._request_counts[key] += 1
 
     def generate(
         self,
@@ -124,16 +160,19 @@ class OpenAICompatibleModelClient:
         if self.api_key:
             headers["authorization"] = f"Bearer {self.api_key}"
         assert self.transport is not None
-        response = _request_json_with_retries(
+        return _request_json_with_retries(
             self.transport,
             _endpoint(self.base_url, "chat/completions"),
             headers,
             payload,
             self.timeout_seconds,
-            max_retries=self.max_retries,
+            # A single budget covers transport and envelope recovery together.
+            # A caller can disable/reduce retries, but generation never exceeds 3 submissions.
+            max_retries=min(self.max_retries, 2),
             retry_backoff_seconds=self.retry_backoff_seconds,
+            response_parser=_extract_openai_text,
+            record_stat=self._record_request_stat,
         )
-        return _extract_openai_text(response)
 
 
 @dataclass(slots=True)
@@ -399,17 +438,57 @@ def _request_json_with_retries(
     *,
     max_retries: int,
     retry_backoff_seconds: float,
-) -> Mapping[str, Any]:
-    """对临时网络和上游服务错误执行有限次数的指数退避重试。"""
+    response_parser: Callable[[Mapping[str, Any]], Any] | None = None,
+    record_stat: Callable[[str], None] | None = None,
+) -> Any:
+    """Retry one shared request budget; optional OpenAI text validation is inside it.
+
+    Embeddings and Anthropic retain their existing transport-only retry boundary.
+    """
+    def record(key: str) -> None:
+        if record_stat is not None:
+            record_stat(key)
+
+    record("requests")
+    error_counts: dict[str, int] = {}
     for attempt in range(max_retries + 1):
+        record("attempts")
+        if attempt:
+            record("retries")
         try:
-            return transport(url, headers, payload, timeout_seconds)
+            response = transport(url, headers, payload, timeout_seconds)
+            if response_parser is not None:
+                _raise_provider_error(response)
+                result = response_parser(response)
+            else:
+                result = response
         except ModelAPIError as exc:
+            if response_parser is not None:
+                if exc.error_category == "response_structure":
+                    exc.retryable = True
+                if exc.status_code is not None and 400 <= exc.status_code < 500 and exc.status_code not in {408, 425, 429}:
+                    exc.retryable = False
+                # An explicit permanent provider error overrides even HTTP 429/5xx.
+                if exc.provider_error_kind == "permanent":
+                    exc.retryable = False
+            category = _ERROR_STAT_KEYS.get(exc.error_category, "other_api_errors")
+            record(category)
+            error_counts[category] = error_counts.get(category, 0) + 1
+            exc.attempt_count = attempt + 1
+            exc.error_counts = dict(error_counts)
             if not exc.retryable or attempt >= max_retries:
+                record("failed")
                 raise
             delay = retry_backoff_seconds * (2**attempt)
             if delay > 0:
                 time.sleep(delay)
+        except Exception:
+            record("other_api_errors")
+            record("failed")
+            raise
+        else:
+            record("succeeded")
+            return result
     raise AssertionError("unreachable retry loop")
 
 
@@ -432,33 +511,113 @@ def _post_json(
     except HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
         retryable = exc.code in {408, 425, 429} or 500 <= exc.code <= 599
+        try:
+            error_kind = _provider_error_kind(json.loads(detail))
+        except json.JSONDecodeError:
+            error_kind = None
         raise ModelAPIError(
             f"Model API returned HTTP {exc.code}: {detail}",
             status_code=exc.code,
             retryable=retryable,
+            error_category="http",
+            provider_error_kind=error_kind,
         ) from exc
     except (URLError, TimeoutError, OSError) as exc:
         raise ModelAPIError(
             f"Model API request failed: {exc}",
             retryable=True,
+            error_category="transport",
+        ) from exc
+    except UnicodeDecodeError as exc:
+        raise ModelAPIError(
+            "Model API returned invalid UTF-8", error_category="response_structure",
         ) from exc
     try:
         decoded = json.loads(body)
     except json.JSONDecodeError as exc:
-        raise ModelAPIError("Model API returned invalid JSON") from exc
+        raise ModelAPIError(
+            "Model API returned invalid JSON", error_category="response_structure",
+        ) from exc
     if not isinstance(decoded, Mapping):
-        raise ModelAPIError("Model API response must be a JSON object")
+        raise ModelAPIError(
+            "Model API response must be a JSON object", error_category="response_structure",
+        )
     return dict(decoded)
+
+
+def _provider_error_kind(response: Any) -> str | None:
+    """Classify explicit error envelopes without retaining or replaying their text.
+
+    Unknown explicit errors fail closed. Missing normal response fields alone
+    are handled separately as malformed envelopes, not claimed provider errors.
+    """
+    if not isinstance(response, Mapping):
+        return None
+    error = response.get("error")
+    if error is None and "choices" not in response and "message" in response:
+        code = response.get("code", response.get("status", response.get("status_code")))
+        if code not in (None, 0, 200, "0", "200", "success") or response.get("success") is False:
+            error = response
+    if error is None:
+        return None
+    fields = error if isinstance(error, Mapping) else {"message": str(error)}
+    identifiers = {str(fields.get(key, "")).strip().lower() for key in ("code", "type", "status", "status_code")}
+    permanent = {
+        "400", "401", "402", "403", "404", "invalid_api_key", "authentication_error",
+        "unauthorized", "permission_error", "permission_denied", "forbidden",
+        "insufficient_quota", "quota_exceeded", "billing_hard_limit_reached",
+        "billing_not_active", "insufficient_balance", "balance_not_enough", "payment_required",
+        "invalid_request_error", "context_length_exceeded", "prompt_tokens_too_large",
+        "model_not_found", "not_found_error", "unsupported_model",
+    }
+    # Gateways sometimes use a generic type for billing/authentication failures.
+    # Inspect only for classification; messages never enter retry prompts or new diagnostics.
+    message = str(fields.get("message", "")).lower()
+    permanent_messages = (
+        "insufficient quota", "insufficient_quota", "quota exceeded", "insufficient balance",
+        "insufficient credit", "billing", "invalid api key", "invalid_api_key",
+        "authentication failed", "unauthorized", "permission denied", "model not found",
+        "model does not exist", "余额不足", "额度不足", "欠费",
+    )
+    if identifiers & permanent or any(fragment in message for fragment in permanent_messages):
+        return "permanent"
+    transient = {
+        "408", "425", "429", "500", "502", "503", "504", "rate_limit_exceeded",
+        "rate_limit_error", "too_many_requests", "server_error", "internal_server_error",
+        "internal_error", "service_unavailable", "overloaded_error", "api_error",
+        "timeout", "request_timeout", "capacity_exceeded",
+    }
+    return "transient" if identifiers & transient else "unknown"
+
+
+def _raise_provider_error(response: Any) -> None:
+    kind = _provider_error_kind(response)
+    if kind is not None:
+        raise ModelAPIError(
+            f"Model API returned an explicit provider error (classification={kind})",
+            retryable=kind == "transient", error_category="provider", provider_error_kind=kind,
+        )
 
 
 def _extract_openai_text(response: Mapping[str, Any]) -> str:
     """从 OpenAI Chat Completions 响应中提取文本内容。"""
     try:
-        choice = response["choices"][0]
+        choices = response["choices"]
+        if not isinstance(choices, Sequence) or isinstance(choices, (str, bytes)):
+            raise TypeError
+        choice = choices[0]
+        if not isinstance(choice, Mapping):
+            raise TypeError
         message = choice["message"]
-        content = message["content"]
+        if not isinstance(message, Mapping):
+            raise TypeError
+        if "content" not in message and "reasoning_content" not in message and choice.get("finish_reason") != "length":
+            raise KeyError("content")
+        content = message.get("content")
     except (KeyError, IndexError, TypeError) as exc:
-        raise ModelAPIError("Invalid OpenAI-compatible response structure") from exc
+        raise ModelAPIError(
+            "Invalid OpenAI-compatible response structure", error_category="response_structure",
+        ) from exc
     try:
         return _content_to_text(content, provider="OpenAI-compatible")
     except ModelAPIError as exc:
@@ -473,7 +632,8 @@ def _extract_openai_text(response: Mapping[str, Any]) -> str:
             "OpenAI-compatible response contains no final text "
             f"(finish_reason={finish_reason!r}, "
             f"reasoning_content_characters={reasoning_characters}); "
-            "increase max_tokens or disable reasoning for this model"
+            "increase max_tokens or disable reasoning for this model",
+            error_category="response_content",
         ) from exc
 
 

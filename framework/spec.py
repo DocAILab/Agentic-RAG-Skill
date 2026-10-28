@@ -485,5 +485,7 @@ def _load_module(path: Path, package_name: str) -> ModuleType:
     if module_spec is None or module_spec.loader is None:
         raise SkillSpecError(f"Cannot import runtime script: {path}")
     module = importlib.util.module_from_spec(module_spec)
-    module_spec.loader.exec_module(module)
+    # Skill revisions can preserve file size and occur within one timestamp tick;
+    # always execute current source instead of a timestamp-based .pyc cache.
+    exec(compile(path.read_bytes(), str(path), "exec"), module.__dict__)
     return module

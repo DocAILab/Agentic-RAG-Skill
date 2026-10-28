@@ -12,6 +12,7 @@ MAX_SAMPLE_DOCUMENTS = 3
 MAX_TITLE_CHARS = 160
 MAX_EXCERPT_CHARS = 400
 MAX_CONSTRAINT_CHARS = 1500
+MAX_OUTPUT_ATTEMPTS = 3
 _ANNOTATION_KEYS = frozenset({
     "role", "origin", "source", "metadata", "source_question_ids", "answers",
     "gold_answers", "relevant_document_ids", "supporting_facts", "label_type",
@@ -49,12 +50,33 @@ def run(inputs, context):
         f"Corpus summary:\n{json.dumps(corpus, ensure_ascii=False, indent=2)}\n\n"
         f"Constraints:\n{constraints}"
     )
-    response = context.call_model(
-        prompt,
-        temperature=0.0,
-        max_tokens=inputs.get("max_tokens"),
-    )
-    return _validate_result(_parse_json(response), routes)
+    base_prompt = prompt
+    diagnostics = []
+    for attempt in range(MAX_OUTPUT_ATTEMPTS):
+        response = context.call_model(
+            prompt,
+            temperature=0.0,
+            max_tokens=inputs.get("max_tokens"),
+        )
+        try:
+            return _validate_result(_parse_json(response), routes)
+        except ValueError as exc:
+            diagnostics.append(str(exc))
+            if attempt + 1 >= MAX_OUTPUT_ATTEMPTS:
+                raise ValueError(
+                    f"Classifier output contract failed after {MAX_OUTPUT_ATTEMPTS} attempts: "
+                    + "; ".join(dict.fromkeys(diagnostics))
+                ) from exc
+            prompt = (
+                f"{base_prompt}\n\n"
+                "OUTPUT CONTRACT CORRECTION:\n"
+                f"Validation error: {exc}\n"
+                "Return only one JSON object with exactly route, reason, confidence. "
+                f"route must be one string from {', '.join(sorted(routes))}; "
+                "reason must be a string and confidence a number from 0 to 1. "
+                "Keep the original classification mode and allowed routes unchanged."
+            )
+    raise ValueError("Classifier output contract validation failed")  # pragma: no cover
 
 
 def _corpus_summary(documents):
@@ -145,6 +167,8 @@ def _validate_result(payload, routes):
     required = {"route", "reason", "confidence"}
     if set(payload) != required:
         raise ValueError("Classifier result must contain exactly route, reason, confidence")
+    if not isinstance(payload["route"], str):
+        raise ValueError("Classifier route must be a string")
     if payload["route"] not in routes:
         raise ValueError(
             "Classifier route must be one of: " + ", ".join(sorted(routes))

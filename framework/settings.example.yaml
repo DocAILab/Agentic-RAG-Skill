@@ -23,6 +23,11 @@ executor:
   options:
     max_retries: 2
     retry_backoff_seconds: 2.0
+    # HyDE/classifier/critic requests use small output budgets; require final text.
+    # DeepSeek enables thinking by default, which can consume the entire budget.
+    extra_body:
+      thinking:
+        type: disabled
 embedding:
   enabled: true
   provider: sentence-transformers

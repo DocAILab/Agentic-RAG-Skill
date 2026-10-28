@@ -23,6 +23,8 @@ from .compiler import (
 )
 from .data_groups import DataGroup, GroupDataError, GroupQA, GroupTask, load_group
 from .interfaces import ComponentContext, ComponentInvoker, RAGRequest, build_rag_request
+from .evidence import EvidencePack, prepare_evidence
+from .reranking import local_model_inference_lock
 from .demo import DemoError, run_demo
 from .evaluation import (
     EvaluationError,
@@ -111,6 +113,7 @@ __all__ = [
     "EvaluationExample",
     "EvaluationSummary",
     "ExecutionError",
+    "EvidencePack",
     "ExampleMetrics",
     "GenerationEvaluator",
     "GenerationMetricError",
@@ -165,6 +168,8 @@ __all__ = [
     "compile_rag_command",
     "create_model_client",
     "load_runtime_callable",
+    "prepare_evidence",
+    "local_model_inference_lock",
     "load_framework_config",
     "load_group",
     "load_spec",

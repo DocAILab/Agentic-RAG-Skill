@@ -98,6 +98,7 @@ class RuntimeComponentContext:
     _corpus_cache_builds: int = field(default=0, init=False, repr=False)
     _corpus_cache_hits: int = field(default=0, init=False, repr=False)
     _embedding_cache_identity: str | None = field(default=None, init=False, repr=False)
+    _pending_evidence_selection: dict[str, Any] | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         """规范化缓存目录，并在未显式提供时推导 Embedding 模型指纹。"""
@@ -105,6 +106,16 @@ class RuntimeComponentContext:
             self.vector_index_cache_dir = Path(self.vector_index_cache_dir).resolve()
         if self.embedding_model is not None and self.embedding_fingerprint is None:
             self.embedding_fingerprint = embedding_model_fingerprint(self.embedding_model)
+
+    def record_evidence_selection(self, metadata: Mapping[str, Any]) -> None:
+        """Attach text-free evidence provenance to the current Component call."""
+        self._pending_evidence_selection = dict(metadata)
+
+    def take_evidence_selection(self) -> dict[str, Any] | None:
+        """Consume one call's provenance without accumulating per-QA state."""
+        metadata = self._pending_evidence_selection
+        self._pending_evidence_selection = None
+        return metadata
 
     def bind_corpus(
         self,
@@ -446,32 +457,31 @@ class BoundComponentInvoker:
                 f"Component slot '{slot}' has no binding at index {index}"
             )
         component_name = self.binding_names[slot][index]
+        take_evidence = getattr(self.context, "take_evidence_selection", None)
+        if callable(take_evidence):
+            take_evidence()
         started_at = perf_counter()
+        status = "failed"
         try:
             result = functions[index](dict(inputs), self.context)
             if not isinstance(result, Mapping):
                 raise ExecutionError(
                     f"Component slot '{slot}' returned a non-mapping result"
                 )
-        except Exception:
-            self._call_timings.append(
-                {
-                    "slot": slot,
-                    "component": component_name,
-                    "duration_seconds": round(perf_counter() - started_at, 6),
-                    "status": "failed",
-                }
-            )
-            raise
-        self._call_timings.append(
-            {
+            normalized = dict(result)
+            status = "completed"
+            return normalized
+        finally:
+            timing = {
                 "slot": slot,
                 "component": component_name,
                 "duration_seconds": round(perf_counter() - started_at, 6),
-                "status": "completed",
+                "status": status,
             }
-        )
-        return dict(result)
+            metadata = take_evidence() if callable(take_evidence) else None
+            if metadata is not None:
+                timing["evidence_selection"] = metadata
+            self._call_timings.append(timing)
 
     def call_all(
         self,

@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeVar
 
 from .models import ModelClient
 from .spec import (
@@ -18,11 +18,22 @@ from .spec import (
 )
 
 SELECTION_MAX_TOKENS = 8192
-COMPONENT_SELECTION_MAX_ATTEMPTS = 2
+MANAGE_SELECTION_MAX_ATTEMPTS = 3
+AGENTIC_SELECTION_MAX_ATTEMPTS = 3
+COMPONENT_SELECTION_MAX_ATTEMPTS = 3
+_StageOutput = TypeVar("_StageOutput")
 
 
 class SelectionError(ValueError):
     """表示模型输出或候选绑定不符合分级选择契约。"""
+
+
+class _ResponseValidationError(SelectionError):
+    """A correctable model response with feedback that contains no raw output."""
+
+    def __init__(self, message: str, *, feedback: str | None = None) -> None:
+        super().__init__(message)
+        self.feedback = message if feedback is None else feedback
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,8 +102,18 @@ def run_manage_stage(
     """第一步只加载 Manage Skill，并调用模型生成 Agentic 选择指导。"""
     specs = discover_specs(skill_root, validate_runtime=False)
     manage = _find_spec(specs, manage_skill, expected_kind=SkillKind.MANAGE)
-    payload = _call_json_model(
+
+    def validate(payload: Mapping[str, Any]) -> tuple[str, str]:
+        return (
+            _required_text(payload, "agentic_selection_guidance"),
+            _optional_text(payload, "reason"),
+        )
+
+    guidance, reason = _call_stage_with_repair(
         model,
+        stage="Manage",
+        max_attempts=MANAGE_SELECTION_MAX_ATTEMPTS,
+        validate=validate,
         system=(
             "You are the frozen Executor Model at the Manage stage. "
             "Follow only the loaded Manage Skill and return strict JSON."
@@ -108,8 +129,8 @@ def run_manage_stage(
     )
     return ManageStageResult(
         manage_skill=manage.package_name,
-        guidance=_required_text(payload, "agentic_selection_guidance"),
-        reason=_optional_text(payload, "reason"),
+        guidance=guidance,
+        reason=reason,
     )
 
 
@@ -125,8 +146,25 @@ def select_agentic_skill(
     agentic_specs = tuple(spec for spec in specs if spec.kind is SkillKind.AGENTIC)
     if not agentic_specs:
         raise SelectionError("No Agentic Skill candidates are available")
-    payload = _call_json_model(
+
+    def validate(payload: Mapping[str, Any]) -> tuple[RAGSkillSpec, str]:
+        selected_name = _required_text(payload, "selected_agentic_skill")
+        try:
+            selected = _find_spec(
+                agentic_specs, selected_name, expected_kind=SkillKind.AGENTIC,
+            )
+        except SelectionError as exc:
+            raise _ResponseValidationError(
+                str(exc),
+                feedback="selected_agentic_skill must name exactly one advertised Agentic Skill.",
+            ) from exc
+        return selected, _optional_text(payload, "reason")
+
+    selected, reason = _call_stage_with_repair(
         model,
+        stage="Agentic",
+        max_attempts=AGENTIC_SELECTION_MAX_ATTEMPTS,
+        validate=validate,
         system=(
             "You are the frozen Executor Model at the Agentic selection stage. "
             "Choose exactly one advertised Agentic Skill and return strict JSON."
@@ -142,16 +180,10 @@ def select_agentic_skill(
             '{"selected_agentic_skill":"exact-name","reason":"..."}.'
         ),
     )
-    selected_name = _required_text(payload, "selected_agentic_skill")
-    selected = _find_spec(
-        agentic_specs,
-        selected_name,
-        expected_kind=SkillKind.AGENTIC,
-    )
     return AgenticStageResult(
         spec=selected,
         instructions=_read_skill_document(selected),
-        reason=_optional_text(payload, "reason"),
+        reason=reason,
         advertised_skills=tuple(spec.package_name for spec in agentic_specs),
     )
 
@@ -200,43 +232,25 @@ def select_component_skills(
         "unused optional slot. Every binding value must be a JSON array of "
         "exact component-name strings, even when the slot accepts only one item."
     )
-    prompt = base_prompt
-    last_error: SelectionError | None = None
-    for attempt in range(COMPONENT_SELECTION_MAX_ATTEMPTS):
-        try:
-            payload = _call_json_model(model, system=system, prompt=prompt)
-            bindings = _validate_bindings(
-                payload.get("component_bindings"),
-                agentic.slots,
-                slot_candidates,
-            )
-            break
-        except SelectionError as exc:
-            last_error = exc
-            if (
-                not _is_repairable_component_format_error(exc)
-                or attempt + 1 >= COMPONENT_SELECTION_MAX_ATTEMPTS
-            ):
-                raise
-            prompt = (
-                f"{base_prompt}\n\n"
-                "YOUR PREVIOUS RESPONSE WAS REJECTED:\n"
-                f"{exc}\n\n"
-                "Correct only the response format or invalid bindings and return "
-                "one strict JSON object. Do not include Markdown or commentary."
-            )
-    else:  # pragma: no cover - the loop either succeeds or raises
-        raise last_error or SelectionError("Component selection failed")
     component_by_name = {
         spec.package_name: spec for spec in component_specs
     }
-    requirement_errors = binding_requirement_errors(
-        agentic,
-        bindings,
-        component_by_name,
+
+    def validate(payload: Mapping[str, Any]) -> tuple[dict[str, tuple[str, ...]], str]:
+        bindings = _validate_bindings(
+            payload.get("component_bindings"), agentic.slots, slot_candidates,
+        )
+        requirement_errors = binding_requirement_errors(agentic, bindings, component_by_name)
+        if requirement_errors:
+            # All names here already passed candidate validation; diagnostics
+            # derive exclusively from trusted Skill capability requirements.
+            raise _ResponseValidationError(requirement_errors[0])
+        return bindings, _optional_text(payload, "reason")
+
+    bindings, reason = _call_stage_with_repair(
+        model, stage="Component", system=system, prompt=base_prompt,
+        max_attempts=COMPONENT_SELECTION_MAX_ATTEMPTS, validate=validate,
     )
-    if requirement_errors:
-        raise SelectionError(requirement_errors[0])
     selected_names = {name for names in bindings.values() for name in names}
     instructions = {
         name: _read_skill_document(
@@ -248,23 +262,39 @@ def select_component_skills(
         agentic_skill=agentic.package_name,
         bindings=bindings,
         instructions=instructions,
-        reason=_optional_text(payload, "reason"),
+        reason=reason,
     )
 
 
-def _is_repairable_component_format_error(error: SelectionError) -> bool:
-    """仅将可由模型重新排版修复的 Component 输出错误标记为可重试。"""
-    message = str(error)
-    return (
-        message.startswith("Model did not return strict JSON")
-        or message == "Model JSON response must be an object"
-        or message == "component_bindings must be a JSON object"
-        or message.startswith("component_bindings must contain exactly these slots")
-        or "must be a string list" in message
-        or "contains a serialized JSON value" in message
-        or "contains duplicates" in message
-        or "Binding count for slot" in message
-    )
+def _call_stage_with_repair(
+    model: ModelClient,
+    *,
+    stage: str,
+    system: str,
+    prompt: str,
+    max_attempts: int,
+    validate: Callable[[Mapping[str, Any]], _StageOutput],
+) -> _StageOutput:
+    """Retry correctable model output under the unchanged stage constraints."""
+    base_prompt = prompt
+    for attempt in range(max_attempts):
+        try:
+            return validate(_call_json_model(model, system=system, prompt=prompt))
+        except _ResponseValidationError as exc:
+            if attempt + 1 >= max_attempts:
+                raise SelectionError(
+                    f"{stage} selection failed after {max_attempts} attempts: {exc}"
+                ) from exc
+            prompt = (
+                f"{base_prompt}\n\n"
+                "YOUR PREVIOUS RESPONSE WAS REJECTED:\n"
+                f"{exc.feedback}\n\n"
+                "Correct the response format or invalid selection and return one strict JSON object "
+                "with the required fields. Keep the advertised candidates and "
+                "selection constraints unchanged; satisfy every capability dependency. "
+                "Do not include Markdown or commentary."
+            )
+    raise SelectionError(f"{stage} selection failed")  # pragma: no cover
 
 
 def select_rag_plan(
@@ -394,9 +424,14 @@ def _call_json_model(
     try:
         payload = json.loads(text)
     except json.JSONDecodeError as exc:
-        raise SelectionError(f"Model did not return strict JSON: {response}") from exc
+        preview = response[:512] + ("... [truncated]" if len(response) > 512 else "")
+        raise _ResponseValidationError(
+            f"Model did not return strict JSON at line {exc.lineno}, "
+            f"column {exc.colno}: {preview}",
+            feedback=f"Model did not return strict JSON at line {exc.lineno}, column {exc.colno}.",
+        ) from exc
     if not isinstance(payload, Mapping):
-        raise SelectionError("Model JSON response must be an object")
+        raise _ResponseValidationError("Model JSON response must be an object")
     return dict(payload)
 
 
@@ -452,10 +487,10 @@ def _validate_bindings(
 ) -> dict[str, tuple[str, ...]]:
     """校验模型返回的槽位集合、数量、唯一性和候选合法性。"""
     if not isinstance(payload, Mapping):
-        raise SelectionError("component_bindings must be a JSON object")
+        raise _ResponseValidationError("component_bindings must be a JSON object")
     expected_slots = {slot.name for slot in slots}
     if set(payload) != expected_slots:
-        raise SelectionError(
+        raise _ResponseValidationError(
             "component_bindings must contain exactly these slots: "
             f"{sorted(expected_slots)}"
         )
@@ -465,25 +500,26 @@ def _validate_bindings(
         if not isinstance(selected, list) or not all(
             isinstance(name, str) for name in selected
         ):
-            raise SelectionError(f"Binding for slot '{slot.name}' must be a string list")
+            raise _ResponseValidationError(f"Binding for slot '{slot.name}' must be a string list")
         names = tuple(selected)
         if any(_looks_like_serialized_json_value(name) for name in names):
-            raise SelectionError(
+            raise _ResponseValidationError(
                 f"Binding for slot '{slot.name}' contains a serialized JSON value; "
                 "return component names directly or use an empty JSON array"
             )
         if len(names) != len(set(names)):
-            raise SelectionError(f"Binding for slot '{slot.name}' contains duplicates")
+            raise _ResponseValidationError(f"Binding for slot '{slot.name}' contains duplicates")
         if not slot.min_count <= len(names) <= slot.max_count:
-            raise SelectionError(
+            raise _ResponseValidationError(
                 f"Binding count for slot '{slot.name}' must be between "
                 f"{slot.min_count} and {slot.max_count}"
             )
         allowed = {spec.package_name for spec in candidates[slot.name]}
         unknown = set(names) - allowed
         if unknown:
-            raise SelectionError(
-                f"Slot '{slot.name}' selected incompatible Components: {sorted(unknown)}"
+            raise _ResponseValidationError(
+                f"Slot '{slot.name}' selected incompatible Components: {sorted(unknown)}",
+                feedback=f"Slot '{slot.name}' must select only its advertised compatible Components.",
             )
         bindings[slot.name] = names
     return bindings
@@ -503,7 +539,7 @@ def _required_text(payload: Mapping[str, Any], key: str) -> str:
     """读取模型 JSON 中必须存在的非空字符串字段。"""
     value = payload.get(key)
     if not isinstance(value, str) or not value.strip():
-        raise SelectionError(f"Model response requires non-empty '{key}'")
+        raise _ResponseValidationError(f"Model response requires non-empty '{key}'")
     return value.strip()
 
 
@@ -511,5 +547,5 @@ def _optional_text(payload: Mapping[str, Any], key: str) -> str:
     """读取可选文本字段，并在缺失时返回空字符串。"""
     value = payload.get(key, "")
     if not isinstance(value, str):
-        raise SelectionError(f"Model response field '{key}' must be a string")
+        raise _ResponseValidationError(f"Model response field '{key}' must be a string")
     return value.strip()

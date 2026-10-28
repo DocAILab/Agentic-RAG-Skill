@@ -17,7 +17,7 @@ optimizer:
   # VVEAI、本地 vLLM、SGLang、Ollama OpenAI 兼容服务均使用 openai-compatible。
   provider: openai-compatible
   # 按你的模型服务实际提供的 ID 配置。
-  model: qwen3-8b
+  model: qwen3.5-27b
   # 客户端会继续追加 chat/completions，因此必须保留 /v1。
   base_url: https://api.vveai.com/v1
   # 本地服务可保持两项均为 null。远程服务可在本地 settings.yaml 直写 api_key，
@@ -32,7 +32,7 @@ optimizer:
     default_max_tokens: 8192
     max_retries: 2
     retry_backoff_seconds: 2.0
-    # VVEAI 要求 qwen3-8b 的非流式 Chat Completions 显式关闭 thinking。
+    # 本示例使用非流式 Chat Completions，并显式关闭 Qwen 的 thinking。
     extra_body:
       enable_thinking: false
 

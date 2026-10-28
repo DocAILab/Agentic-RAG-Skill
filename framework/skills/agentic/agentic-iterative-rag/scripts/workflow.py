@@ -176,11 +176,12 @@ def _merge_evidence(evidence, documents):
     return new_ids
 
 
-def _generate(request, components, query, documents):
+def _generate(request, components, query, documents, *, evidence_query=None):
     generated = components.call(
         "generator",
         {
             "query": query,
+            "evidence_query": query if evidence_query is None else evidence_query,
             "documents": documents,
             "max_tokens": request.get("max_tokens"),
         },
@@ -213,7 +214,9 @@ def _regenerate(request, components, iteration, query, documents, answer, critiq
         f"{query}\n\nAnswer revision: {guidance} "
         "Use the same evidence and return only the shortest direct answer."
     )
-    revised_answer = _generate(request, components, revision_query, documents)
+    revised_answer = _generate(
+        request, components, revision_query, documents, evidence_query=query,
+    )
     revised_critique = _critique(
         request,
         components,
