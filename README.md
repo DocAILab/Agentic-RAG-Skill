@@ -20,7 +20,7 @@ XRAGOS is a framework for adapting retrieval-augmented generation by **selecting
 
 For each QA, the Executor reads Manage guidance, selects one Agentic Skill, then selects compatible Components for its slots. The framework checks the bindings, loads the selected Python scripts, and executes the workflow. Selection progressively exposes Skill instructions; the entire Skill library is not placed in every prompt.
 
-After each completed Task, all selected QA contribute metrics to one optimization event. The Policy selects one participating Skill and proposes bounded file replacements. The framework checks the edit scope, Python code, and Skill contracts. With the supplied configuration, it also reruns up to three evenly spaced QA from that Task and accepts only revisions that pass the improvement gate. Failed revisions are rolled back. See the [execution and optimization design](docs/TECHNICAL_DESIGN.docx).
+After each completed Task, all selected QA contribute metrics to one optimization event. The Policy selects one participating Skill and proposes bounded file replacements. The framework checks the edit scope, Python code, and Skill contracts. With the supplied configuration, it also replays up to three participating QA to check execution and interface contracts. Revisions are retained when these operational checks pass; execution or contract failures restore the previous working copy. Performance metrics inform later Policy feedback and do not decide whether a revision is retained. See the [execution and optimization design](docs/TECHNICAL_DESIGN.docx).
 
 ## Data: Group → Corpus + Tasks → QA
 

@@ -8,8 +8,9 @@ shuffle_seed: 42
 workflow:
   # All QA contribute to metrics; only bounded traces go to Policy.
   max_process_examples: 5
-  # When verify_revision_execution is enabled, re-run evenly spaced QA.
-  # Reports record the actual subset and before/after mean metrics.
+  # When verify_revision_execution is enabled, replay participating QA to check
+  # execution and interface contracts only. This is not a performance sample;
+  # metrics, answer correctness and gold matching do not accept/reject edits.
   validation_examples_per_task: 3
   request:
     top_k: 10

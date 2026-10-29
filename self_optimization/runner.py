@@ -35,6 +35,7 @@ from .config import (
 )
 from .console import configure_console_utf8
 from .optimizer import OptimizationError, OptimizationNoChange, SkillOptimizer
+from .execution_validation import verify_execution
 from .workspace import RevisionRejected, SkillWorkspace
 
 
@@ -108,6 +109,7 @@ def run_self_optimization(
         source_skill_root=str(workspace.source_root),
         working_skill_root=str(workspace.skill_root),
         optimizer_model=config.optimizer.model,
+        revision_validation_mode="execution_only",
         max_examples=effective_limit,
     )
 
@@ -249,12 +251,51 @@ def run_self_optimization(
                 max_file_chars=config.optimization.max_skill_file_chars,
                 allow_new_files=config.optimization.allow_new_files,
             )
+            verification = None
+            if config.optimization.verify_revision_execution:
+                verification = {
+                    "mode": "execution_only", "performance_gate": False,
+                    "scope": "current_sample", "verified_examples": 0,
+                    "all_passed": False, "examples": [],
+                }
+                try:
+                    checked = verify_execution(
+                        request=request, selection=plan.to_dict(),
+                        selected_skill=proposal.selected_skill,
+                        skill_root=workspace.skill_root, manage_skill=framework_config.manage_skill,
+                        executor_model=executor_model, runtime_context=runtime_context,
+                    )
+                    verification["examples"].append({"question_id": question_id, **checked})
+                    verification.update(verified_examples=1, all_passed=True)
+                    verification.update(
+                        exercised_examples=int(checked["selected_skill_exercised"]),
+                        coverage_status="full" if checked["selected_skill_exercised"] else "none",
+                    )
+                except Exception as exc:
+                    category = "external_service_error" if isinstance(exc, ModelAPIError) else "execution_validation_failed"
+                    reason = "Post-revision operational validation failed: " + _safe_error_message(exc)
+                    verification["examples"].append({
+                        "question_id": question_id, "validation_status": "failed",
+                        "error_type": type(exc).__name__, "error": _safe_error_message(exc),
+                    })
+                    workspace.rollback_revision(revision, reason=reason,
+                                                failure_category=category, verification=verification)
+                    if isinstance(exc, ModelAPIError):
+                        exc.failure_category = category
+                        exc.revision_verification = verification
+                        raise
+                    rejected = RevisionRejected(reason)
+                    rejected.failure_category = category
+                    rejected.revision_verification = verification
+                    raise rejected from exc
             optimization_record = {
                 "status": "accepted",
                 "selected_skill": proposal.selected_skill,
                 "rationale": proposal.rationale,
                 "revision": revision.to_dict(),
             }
+            if verification is not None:
+                optimization_record["verification"] = verification
         except OptimizationNoChange as exc:
             optimization_record = {
                 "status": "skipped",
@@ -268,7 +309,10 @@ def run_self_optimization(
                 "status": "rejected",
                 "error_type": type(exc).__name__,
                 "error": _safe_error_message(exc),
+                "failure_category": getattr(exc, "failure_category", "external_service_error" if isinstance(exc, ModelAPIError) else "proposal_validation_failed"),
             }
+            if getattr(exc, "revision_verification", None) is not None:
+                optimization_record["verification"] = exc.revision_verification
         audit = write_optimization_audit(
             workspace.run_root / "optimizer_calls" / f"example-{index:04d}",
             model_calls=optimizer.calls,
@@ -553,6 +597,8 @@ def _build_report(
     """构造不含密钥和完整语料的可提交实验报告。"""
     return {
         "schema_version": 1,
+        "revision_validation_mode": "execution_only",
+        "acceptance_policy": "execution_only",
         "run_id": workspace.run_id,
         "created_at": datetime.now(UTC).isoformat(),
         "source_skill_root": str(workspace.source_root),

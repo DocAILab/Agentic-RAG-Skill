@@ -38,7 +38,8 @@ class OptimizationSettings:
     max_proposal_attempts: int = 3
     allow_new_files: bool = False
     continue_on_optimization_error: bool = True
-    verify_revision_execution: bool = False
+    # Compatibility name: validate execution and interfaces, never performance.
+    verify_revision_execution: bool = True
 
     def __post_init__(self) -> None:
         """校验优化轮数、模型参数和上下文边界均可安全执行。"""
@@ -272,7 +273,7 @@ def _parse_optimization(payload: Mapping[str, Any]) -> OptimizationSettings:
         verify_revision_execution=_boolean(
             payload,
             "verify_revision_execution",
-            False,
+            True,
         ),
     )
 

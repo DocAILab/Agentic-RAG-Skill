@@ -20,7 +20,7 @@ XRAGOS 通过**选择与修订可执行 Skill**，让检索增强生成流程适
 
 每个 QA 都由 Executor 读取 Manage 指导，选择一个 Agentic Skill，再为其槽位选择兼容的 Component。框架校验绑定关系，加载选中的 Python 脚本并执行工作流。Skill 指令按层逐步提供给模型。
 
-每个 Task 完成后，所有已选 QA 的指标共同构成一次优化反馈。Policy 选择一个参与的 Skill，提出受范围限制的文件替换；框架检查修改范围、Python 代码和 Skill 契约。使用提供的配置时，还会从该 Task 均匀选取最多三题重新运行，只接受通过指标提升判据的修订，未通过的修订会回滚。完整过程见[技术设计](docs/TECHNICAL_DESIGN.docx)。
+每个 Task 完成后，所有已选 QA 的指标共同构成一次优化反馈。Policy 选择一个参与的 Skill，提出受范围限制的文件替换；框架检查修改范围、Python 代码和 Skill 契约。使用提供的配置时，还会重跑最多三条参与该 Skill 的 QA，仅检查执行与接口契约。通过这些运行检查后保留修订；代码无法执行或接口不合法时恢复修改前的工作副本。性能指标供后续 Policy 反馈使用，不决定修订是否保留。完整过程见[技术设计](docs/TECHNICAL_DESIGN.docx)。
 
 ## 数据组织 Group → Corpus + Tasks → QA
 

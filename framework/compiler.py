@@ -44,6 +44,41 @@ class ExecutionError(RuntimeError):
     """表示已编译 workflow 或具体 Component 的运行结果不合法。"""
 
 
+def _validate_documents(value: Any, *, label: str) -> None:
+    if isinstance(value, (str, bytes, bytearray)) or not isinstance(value, Sequence):
+        raise ExecutionError(f"{label} must be a document sequence")
+    for document in value:
+        if not isinstance(document, Mapping):
+            raise ExecutionError(f"{label} must contain document mappings")
+        if not isinstance(document.get("id"), str) or not document["id"].strip():
+            raise ExecutionError(f"{label} documents must have non-empty string IDs")
+        if not isinstance(document.get("text"), str):
+            raise ExecutionError(f"{label} documents must have string text")
+
+
+def _validate_output(result: Mapping[str, Any], output_type: str | None) -> None:
+    required = {
+        "GenerationResult": {"answer": str},
+        "RewriteResult": {"rewritten_query": str},
+        "ClassificationResult": {"route": str, "reason": str, "confidence": (int, float)},
+        "CritiqueResult": {"approved": bool, "score": (int, float), "feedback": str, "issues": Sequence},
+    }
+    if output_type in {"RetrievalResult", "RerankResult"}:
+        _validate_documents(result.get("documents"), label=str(output_type))
+    for key, expected in required.get(output_type, {}).items():
+        value = result.get(key)
+        if not isinstance(value, expected) or (
+            expected == (int, float) and isinstance(value, bool)
+        ):
+            raise ExecutionError(f"{output_type}.{key} has an invalid or missing type")
+        if key in {"answer", "rewritten_query", "route"} and not value.strip():
+            raise ExecutionError(f"{output_type}.{key} must be non-empty")
+        if key == "issues" and (
+            isinstance(value, (str, bytes)) or any(not isinstance(item, str) for item in value)
+        ):
+            raise ExecutionError("CritiqueResult.issues must be a string sequence")
+
+
 def _portable_code(code: CodeType) -> CodeType:
     """实现摘要排除工作副本路径，保持相同 Skill 跨运行的磁盘缓存可复用。"""
     return code.replace(
@@ -423,6 +458,7 @@ class BoundComponentInvoker:
     bindings: Mapping[str, tuple[ComponentCallable, ...]]
     binding_names: Mapping[str, tuple[str, ...]]
     context: ComponentContext
+    output_types: Mapping[str, str] = field(default_factory=dict)
     _call_timings: list[dict[str, Any]] = field(
         default_factory=list,
         init=False,
@@ -469,6 +505,7 @@ class BoundComponentInvoker:
                     f"Component slot '{slot}' returned a non-mapping result"
                 )
             normalized = dict(result)
+            _validate_output(normalized, self.output_types.get(slot))
             status = "completed"
             return normalized
         finally:
@@ -526,6 +563,8 @@ class CompiledRAGCommand:
         if not isinstance(result, Mapping):
             raise ExecutionError("Agentic workflow returned a non-mapping result")
         normalized = dict(result)
+        _validate_output(normalized, "GenerationResult")
+        _validate_documents(normalized.get("documents"), label="Workflow result")
         normalized["component_timings"] = self._components.call_timings()
         return normalized
 
@@ -668,6 +707,7 @@ def _compile_selected(
             callable_bindings,
             normalized_bindings,
             context,
+            {slot.name: slot.output_type for slot in workflow_spec.slots},
         ),
     )
 

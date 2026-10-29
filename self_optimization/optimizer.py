@@ -191,11 +191,6 @@ class SkillOptimizer:
                     selection_response,
                     candidate_names=normalized_candidates,
                 )
-                _validate_selection_alignment(
-                    selected_skill,
-                    evaluation=evaluation,
-                    snapshots=catalog_snapshots,
-                )
             except OptimizationError as exc:
                 selection_call.error = str(exc)
                 selection_error = exc
@@ -453,54 +448,6 @@ def _parse_skill_selection(
             f"Optimizer selected a Skill outside this execution: {selected_skill}"
         )
     return selected_skill, _required_text(payload, "rationale")
-
-
-def _validate_selection_alignment(
-    selected_skill: str,
-    *,
-    evaluation: Mapping[str, Any],
-    snapshots: Sequence[Mapping[str, Any]],
-) -> None:
-    """用强指标信号阻止 Policy Model 把明显生成失败错误归因给管理层。"""
-    summary = evaluation.get("task_summary", evaluation.get("overall_summary", {}))
-    if not isinstance(summary, Mapping):
-        return
-    retrieval = summary.get("retrieval", {})
-    generation = summary.get("generation", {})
-    if not isinstance(retrieval, Mapping) or not isinstance(generation, Mapping):
-        return
-    strong_retrieval = (
-        _numeric_metric(retrieval, "Hit@10") >= 0.8
-        and _numeric_metric(retrieval, "MRR") >= 0.5
-    )
-    weak_generation = max(
-        _numeric_metric(generation, "R1"),
-        _numeric_metric(generation, "RL"),
-        _numeric_metric(generation, "METEOR"),
-    ) <= 0.1
-    if not strong_retrieval or not weak_generation:
-        return
-    generator_candidates = {
-        str(snapshot.get("name"))
-        for snapshot in snapshots
-        if snapshot.get("kind") == "component"
-        and any(
-            isinstance(capability, Mapping)
-            and capability.get("name") == "generator"
-            for capability in snapshot.get("provided_capabilities", ())
-        )
-    }
-    if generator_candidates and selected_skill not in generator_candidates:
-        raise OptimizationError(
-            "Selection contradicts measured stage ownership: retrieval Hit@10/MRR "
-            "are strong while R1/RL/METEOR are weak, so select the participating "
-            f"generator Component from {sorted(generator_candidates)}"
-        )
-
-
-def _numeric_metric(metrics: Mapping[str, Any], key: str) -> float:
-    value = metrics.get(key, 0.0)
-    return float(value) if isinstance(value, (int, float)) else 0.0
 
 
 def _parse_skill_edits(

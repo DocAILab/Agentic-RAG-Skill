@@ -291,7 +291,11 @@ class SkillWorkspace:
                 "Source Skill repository changed during self-optimization"
             )
 
-    def rollback_revision(self, revision: RevisionResult, *, reason: str) -> None:
+    def rollback_revision(
+        self, revision: RevisionResult, *, reason: str,
+        failure_category: str = "execution_validation_failed",
+        verification: Mapping[str, Any] | None = None,
+    ) -> None:
         """把已应用修订恢复为其 before 快照，并记录动态验证失败原因。"""
         specs = _specs_by_name(self.skill_root)
         spec = specs.get(revision.selected_skill)
@@ -310,6 +314,8 @@ class SkillWorkspace:
             {
                 "status": "rolled_back",
                 "reason": reason,
+                "failure_category": failure_category,
+                "verification": verification,
                 **revision.to_dict(),
             },
         )

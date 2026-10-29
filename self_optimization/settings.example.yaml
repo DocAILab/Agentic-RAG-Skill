@@ -58,6 +58,7 @@ optimization:
   allow_new_files: false
   # true 时，Qwen 超时、非法 JSON 或结构校验失败会记录为 rejected 并继续下一条样本。
   continue_on_optimization_error: true
-  # true 时，修订会在 task_flow 配置指定的验证样本上重跑；只有负责阶段
-  # 的核心指标确有提升时才接受，否则自动恢复 revision 的 before 快照。
+  # 兼容保留此配置名：true 时按运行入口重跑样本，仅检查代码执行与接口契约。
+  # 不比较性能指标或要求答案命中 gold；性能指标仅作为 Policy 的后续反馈。
+  # 代码无法执行、接口不合法或修改越界时才拒绝或恢复修改前快照。
   verify_revision_execution: true

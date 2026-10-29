@@ -30,6 +30,7 @@ from framework import (
 
 from .audit import compact_optimization_result, write_optimization_audit
 from .config import create_optimizer_model
+from .execution_validation import participating_names, verify_execution
 from .console import configure_console_utf8
 from .optimizer import OptimizationError, OptimizationNoChange, SkillOptimizer
 from .runner import (
@@ -109,6 +110,7 @@ def run_task_workflow(
         task_names=[task.name for task, _ in selected],
         selection=selection,
         optimizer_model=base.optimizer.model,
+        revision_validation_mode="execution_only",
     )
 
     if executor_model is None:
@@ -305,7 +307,8 @@ def run_task_workflow(
                 try:
                     verification = _verify_task_revision(
                         examples=task_examples,
-                        baseline_metrics=task_metrics,
+                        baseline_selections=[result["selection"] for _, result in executions],
+                        baseline_timings=[result.get("component_timings", []) for _, result in executions],
                         sample_count=config.validation_examples_per_task,
                         task=task,
                         selected_skill=proposal.selected_skill,
@@ -313,15 +316,24 @@ def run_task_workflow(
                         workspace=workspace,
                         executor_model=executor_model,
                         runtime_context=runtime_context,
-                        generation_evaluator=generation_evaluator,
                     )
                 except Exception as exc:
-                    reason = (
-                        "Post-revision execution validation failed: "
-                        f"{_safe_error_message(exc)}"
+                    category = (
+                        "external_service_error" if isinstance(exc, ModelAPIError)
+                        else "execution_validation_failed"
                     )
-                    workspace.rollback_revision(revision, reason=reason)
-                    raise RevisionRejected(reason) from exc
+                    reason = "Post-revision operational validation failed: " + _safe_error_message(exc)
+                    workspace.rollback_revision(
+                        revision, reason=reason, failure_category=category,
+                        verification=getattr(exc, "revision_verification", None),
+                    )
+                    if isinstance(exc, ModelAPIError):
+                        exc.failure_category = category
+                        raise
+                    rejected = RevisionRejected(reason)
+                    rejected.failure_category = category
+                    rejected.revision_verification = getattr(exc, "revision_verification", None)
+                    raise rejected from exc
             optimization_record = {
                 "status": "accepted",
                 "selected_skill": proposal.selected_skill,
@@ -343,7 +355,10 @@ def run_task_workflow(
                 "status": "rejected",
                 "error_type": type(exc).__name__,
                 "error": _safe_error_message(exc),
+                "failure_category": getattr(exc, "failure_category", "external_service_error" if isinstance(exc, ModelAPIError) else "proposal_validation_failed"),
             }
+            if getattr(exc, "revision_verification", None) is not None:
+                optimization_record["verification"] = exc.revision_verification
         audit = write_optimization_audit(
             workspace.run_root / "optimizer_calls" / f"task-{task_index:04d}",
             model_calls=optimizer.calls,
@@ -438,114 +453,78 @@ def run_task_workflow(
 
 
 def _verify_revision_execution(
-    *,
-    example: TaskExample,
-    task: RAGTaskConfig,
-    selected_skill: str,
-    baseline_metrics: Mapping[str, Any],
-    framework_config: Any,
-    workspace: SkillWorkspace,
-    executor_model: ModelClient,
-    runtime_context: RuntimeComponentContext,
-    generation_evaluator: GenerationEvaluator | None,
-    enforce_improvement: bool = True,
+    *, example: TaskExample, task: RAGTaskConfig, selected_skill: str,
+    framework_config: Any, workspace: SkillWorkspace,
+    executor_model: ModelClient, runtime_context: RuntimeComponentContext,
+    selection: Mapping[str, Any] | None = None,
+    **_legacy_options: Any,
 ) -> dict[str, Any]:
-    """在接受 revision 前重跑真实样本，并要求其负责阶段的指标确有提升。"""
-    request = _execution_request(framework_config, task, example)
-    plan = select_rag_plan(
-        request,
-        model=executor_model,
-        skill_root=workspace.skill_root,
-        manage_skill=framework_config.manage_skill,
+    """Exercise revised code and interfaces; never score its answer quality."""
+    record = verify_execution(
+        request=_execution_request(framework_config, task, example),
+        selection=selection, selected_skill=selected_skill,
+        skill_root=workspace.skill_root, manage_skill=framework_config.manage_skill,
+        executor_model=executor_model, runtime_context=runtime_context,
     )
-    command = compile_rag_command(
-        plan,
-        skill_root=workspace.skill_root,
-        context=runtime_context,
-    )
-    result = command.run(request)
-    answer = result.get("answer")
-    if not isinstance(answer, str) or not answer.strip():
-        raise TaskWorkflowError("Post-revision execution returned an empty answer")
-    metrics = evaluate_rag_result(
-        result,
-        gold_answers=example.answers,
-        relevant_ids=example.relevant_document_ids,
-        generation_evaluator=generation_evaluator,
-    ).to_dict()
-    comparison = _compare_revision_metrics(
-        selected_skill=selected_skill,
-        baseline=baseline_metrics,
-        revised=metrics,
-        prediction=answer,
-        gold_answers=example.answers,
-    )
-    if enforce_improvement and not comparison["improved"]:
-        raise TaskWorkflowError(str(comparison["reason"]))
-    return {
-        "question_id": example.id,
-        "group_id": example.group_id,
-        "task_id": example.task_id or task.name,
-        "label_type": example.label_type,
-        "prediction": answer.strip(),
-        "agentic_skill": plan.agentic_skill,
-        "retrieved_document_ids": _retrieved_ids(result),
-        "metrics": metrics,
-        "comparison": comparison,
-    }
+    return {"question_id": example.id, "group_id": example.group_id,
+            "task_id": example.task_id or task.name, **record}
 
 
 def _verify_task_revision(
-    *,
-    examples: Sequence[TaskExample],
-    baseline_metrics: Sequence[ExampleMetrics],
-    sample_count: int,
-    **execution_options: Any,
+    *, examples: Sequence[TaskExample], sample_count: int,
+    baseline_selections: Sequence[Mapping[str, Any]] | None = None,
+    baseline_timings: Sequence[Sequence[Mapping[str, Any]]] | None = None,
+    baseline_metrics: Any = None, **execution_options: Any,
 ) -> dict[str, Any]:
-    """Compare a deterministic, uniformly spaced subset before accepting a revision."""
-    indices = _uniform_indices(len(examples), sample_count)
-    records = [
-        _verify_revision_execution(
-            example=examples[index],
-            baseline_metrics=baseline_metrics[index].to_dict(),
-            enforce_improvement=False,
-            **execution_options,
-        )
-        for index in indices
-    ]
-    baseline = summarize_metrics(baseline_metrics[index] for index in indices).to_dict()
-    revised = {
-        phase: {
-            key: sum(record["metrics"][phase][key] for record in records) / len(records)
-            for key in records[0]["metrics"][phase]
-        }
-        for phase in ("retrieval", "generation")
+    """Smoke-test participating QA; old baseline_metrics is ignored for compatibility."""
+    del baseline_metrics
+    selected_skill = execution_options["selected_skill"]
+    eligible = list(range(len(examples)))
+    if baseline_selections is not None:
+        eligible = [i for i, selection in enumerate(baseline_selections)
+                    if selected_skill in participating_names(selection)]
+        if baseline_timings is not None:
+            exercised = [i for i in eligible if selected_skill in {
+                baseline_selections[i].get("manage_skill"),
+                baseline_selections[i].get("agentic_skill"),
+            } or any(t.get("component") == selected_skill for t in baseline_timings[i])]
+            if exercised:
+                eligible = exercised
+    if not eligible:
+        raise TaskWorkflowError("No Task route exercises the revised Skill")
+    indices = [eligible[i] for i in _uniform_indices(len(eligible), sample_count)]
+    verification = {
+        "mode": "execution_only", "performance_gate": False,
+        "scope": "participating_task_subset", "configured_examples": sample_count,
+        "verified_examples": 0, "task_examples": len(examples),
+        "example_indices": indices, "question_ids": [examples[i].id for i in indices],
+        "all_passed": False, "examples": [],
     }
-    comparison = _compare_revision_metrics(
-        selected_skill=execution_options["selected_skill"],
-        baseline=baseline,
-        revised=revised,
-        prediction="",
-        gold_answers=(),
-        answer_supported=all(
-            _prediction_contains_gold(record["prediction"], examples[index].answers)
-            for index, record in zip(indices, records, strict=True)
-        ),
+    for index in indices:
+        try:
+            record = _verify_revision_execution(
+                example=examples[index],
+                selection=baseline_selections[index] if baseline_selections is not None else None,
+                **execution_options,
+            )
+        except Exception as exc:
+            verification["examples"].append({
+                "question_id": examples[index].id, "validation_status": "failed",
+                "error_type": type(exc).__name__, "error": _safe_error_message(exc),
+            })
+            exc.revision_verification = verification
+            raise
+        verification["examples"].append(record)
+        verification["verified_examples"] += 1
+    verification["all_passed"] = True
+    verification["exercised_examples"] = sum(
+        record.get("selected_skill_exercised") is True for record in verification["examples"]
     )
-    if not comparison["improved"]:
-        raise TaskWorkflowError(str(comparison["reason"]))
-    return {
-        "scope": "uniform_task_subset",
-        "configured_examples": sample_count,
-        "verified_examples": len(indices),
-        "task_examples": len(examples),
-        "example_indices": indices,
-        "question_ids": [examples[index].id for index in indices],
-        "baseline_summary": baseline,
-        "revised_summary": revised,
-        "comparison": comparison,
-        "examples": records,
-    }
+    exercised_count = verification["exercised_examples"]
+    verification["coverage_status"] = (
+        "full" if exercised_count == len(indices) else "partial" if exercised_count else "none"
+    )
+    return verification
 
 
 def _uniform_indices(total: int, requested: int) -> list[int]:
@@ -555,105 +534,6 @@ def _uniform_indices(total: int, requested: int) -> list[int]:
     if count == 1:
         return [total // 2]
     return [round(index * (total - 1) / (count - 1)) for index in range(count)]
-
-
-def _compare_revision_metrics(
-    *,
-    selected_skill: str,
-    baseline: Mapping[str, Any],
-    revised: Mapping[str, Any],
-    prediction: str,
-    gold_answers: Sequence[str],
-    answer_supported: bool | None = None,
-) -> dict[str, Any]:
-    """按 Skill 所属阶段比较核心指标，拒绝无提升或明显回退的修订。"""
-    retrieval_keys = ("F1", "MRR", "Hit@10", "MAP", "NDCG")
-    generation_keys = ("ChrF++", "METEOR", "R1", "RL")
-    before_retrieval = _metric_average(baseline, "retrieval", retrieval_keys)
-    after_retrieval = _metric_average(revised, "retrieval", retrieval_keys)
-    before_generation = _metric_average(baseline, "generation", generation_keys)
-    after_generation = _metric_average(revised, "generation", generation_keys)
-    stage = _skill_metric_stage(selected_skill)
-    tolerance = 1e-6
-
-    if after_retrieval + tolerance < before_retrieval:
-        reason = (
-            "Post-revision retrieval score regressed: "
-            f"{before_retrieval:.6f} -> {after_retrieval:.6f}"
-        )
-        improved = False
-    elif stage == "retrieval":
-        improved = after_retrieval > before_retrieval + tolerance
-        reason = "Retrieval metrics did not measurably improve"
-    elif stage == "generation":
-        if answer_supported is None:
-            answer_supported = _prediction_contains_gold(prediction, gold_answers)
-        improved = (
-            answer_supported
-            and after_generation > before_generation + tolerance
-        )
-        reason = (
-            "Generation metrics did not measurably improve with a gold-supported "
-            "short answer"
-        )
-    else:
-        retrieval_gain = after_retrieval - before_retrieval
-        generation_gain = after_generation - before_generation
-        improved = max(retrieval_gain, generation_gain) > tolerance
-        reason = "The revision did not measurably improve retrieval or generation"
-
-    return {
-        "improved": improved,
-        "stage": stage,
-        "reason": None if improved else reason,
-        "baseline_retrieval_score": before_retrieval,
-        "revised_retrieval_score": after_retrieval,
-        "baseline_generation_score": before_generation,
-        "revised_generation_score": after_generation,
-    }
-
-
-def _metric_average(
-    metrics: Mapping[str, Any],
-    group: str,
-    keys: Sequence[str],
-) -> float:
-    values = metrics.get(group, {})
-    if not isinstance(values, Mapping):
-        return 0.0
-    numeric = [
-        float(values[key])
-        for key in keys
-        if isinstance(values.get(key), (int, float))
-    ]
-    return sum(numeric) / len(numeric) if numeric else 0.0
-
-
-def _skill_metric_stage(selected_skill: str) -> str:
-    normalized = selected_skill.lower()
-    if "generator" in normalized:
-        return "generation"
-    if any(
-        marker in normalized
-        for marker in ("retriever", "reranker", "rewriter", "hyde", "bm25", "vector")
-    ):
-        return "retrieval"
-    return "combined"
-
-
-def _prediction_contains_gold(prediction: str, gold_answers: Sequence[str]) -> bool:
-    normalized_prediction = _normalize_answer_text(prediction)
-    return any(
-        normalized_gold and normalized_gold in normalized_prediction
-        for answer in gold_answers
-        if (normalized_gold := _normalize_answer_text(answer))
-    )
-
-
-def _normalize_answer_text(value: str) -> str:
-    return " ".join(
-        "".join(character.lower() if character.isalnum() else " " for character in value).split()
-    )
 
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -746,6 +626,8 @@ def validate_task_workflow(
         "group": _group_summary(config.group) if config.group is not None else None,
         "selection": _selection_summary(selected, max_tasks, examples_per_task),
         "validation_examples_per_task": config.validation_examples_per_task,
+        "revision_validation_mode": "execution_only",
+        "acceptance_policy": "execution_only",
     }
 
 
@@ -988,6 +870,8 @@ def _build_workflow_report(
         "group": _group_summary(config.group) if config.group is not None else None,
         "selection": dict(selection),
         "validation_examples_per_task": config.validation_examples_per_task,
+        "revision_validation_mode": "execution_only",
+        "acceptance_policy": "execution_only",
         "source_skill_root": str(workspace.source_root),
         "source_skill_hash": workspace.source_hash,
         "working_skill_root": str(workspace.skill_root),
