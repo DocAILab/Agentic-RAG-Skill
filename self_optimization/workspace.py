@@ -39,6 +39,19 @@ class RevisionRejected(WorkspaceError):
     """表示优化提案越界、无变化或破坏了 Skill 契约并已回滚。"""
 
 
+def _filesystem_path(path: str | Path) -> Path:
+    """Use absolute paths and native long-path I/O on Windows, without OS changes."""
+    resolved = Path(path).resolve()
+    if os.name != "nt":
+        return resolved
+    text = str(resolved)
+    if text.startswith("\\\\?\\"):
+        return resolved
+    if text.startswith("\\\\"):
+        return Path("\\\\?\\UNC\\" + text[2:])
+    return Path("\\\\?\\" + text)
+
+
 @dataclass(slots=True)
 class SkillWorkspace:
     """维护基础 Skill 的只读来源、运行副本及逐轮修订历史。"""
@@ -59,8 +72,8 @@ class SkillWorkspace:
         run_id: str | None = None,
     ) -> SkillWorkspace:
         """校验基础 Skill 后创建一次性运行目录和完整工作副本。"""
-        source = Path(source_root).resolve()
-        runs = Path(runs_root).resolve()
+        source = _filesystem_path(source_root)
+        runs = _filesystem_path(runs_root)
         if not source.is_dir():
             raise WorkspaceError(f"Source Skill root does not exist: {source}")
         _reject_symlinks(source)
@@ -116,6 +129,26 @@ class SkillWorkspace:
     def run_id(self) -> str:
         """返回当前工作区目录所代表的稳定运行标识。"""
         return self.run_root.name
+
+    @classmethod
+    def open_existing(cls, source_root: str | Path, runs_root: str | Path, *, run_id: str) -> SkillWorkspace:
+        """Reopen a recorded workspace; TaskCheckpoint handles interrupted Skills."""
+        if not _RUN_ID_PATTERN.fullmatch(run_id):
+            raise WorkspaceError("Invalid resume run_id")
+        source, runs = _filesystem_path(source_root), _filesystem_path(runs_root)
+        run = (runs / run_id).resolve()
+        if run.parent != runs or not run.is_dir() or run.is_symlink():
+            raise WorkspaceError("Resume run directory is missing or unsafe")
+        record = json.loads((run / "workspace.json").read_text(encoding="utf-8"))
+        skills = run / "skills"
+        if record.get("run_id") != run_id or _filesystem_path(record["source_root"]) != source or _filesystem_path(record["skill_root"]) != skills:
+            raise WorkspaceError("Workspace manifest does not match the requested run/source")
+        _reject_symlinks(source)
+        workspace = cls(source, run, skills, run / "revisions", record["source_hash"])
+        workspace.assert_source_unchanged()
+        workspace._revision_number = max((int(p.name.split("-")[1]) for p in workspace.revisions_root.iterdir()
+            if p.is_dir() and re.fullmatch(r"revision-\d+", p.name)), default=0)
+        return workspace
 
     def working_hash(self) -> str:
         """计算当前 Skill 工作副本的内容哈希，用于记录跨 task 的版本变化。"""

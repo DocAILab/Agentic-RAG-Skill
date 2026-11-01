@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>XRAGOS · 实验观测台</title>
+  <link rel="icon" href="/xragos-logo.png" type="image/png">
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到实验工作流</a>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="实验导航">
+      <a class="brand" href="/" aria-label="XRAGOS 实验观测台">
+        <img src="/xragos-logo.png" alt="" width="42" height="42">
+        <span>XRAGOS<small>EXPERIMENT OBSERVATORY</small></span>
+      </a>
+      <div class="workspace-label"><span class="workspace-mark">X</span><div>本地研究工作台<small>Adaptive RAG · Self evolution</small></div><span class="local-dot" title="本地只读服务"></span></div>
+      <div class="sidebar-section-title"><span>实验运行</span><span id="run-count" class="number-tag">—</span></div>
+      <label class="run-search search-box"><span data-icon="search"></span><input id="run-search" type="search" placeholder="搜索 Group / 运行" aria-label="搜索实验运行"></label>
+      <div id="runs-list" class="runs-list" aria-live="polite"><div class="side-loading">正在读取本地实验…</div></div>
+      <div class="sidebar-bottom"><div class="read-only"><span data-icon="shield"></span><span>只读观测模式</span></div><p>从运行日志重建真实执行过程<br>手动刷新，不触发模型调用</p><div class="local-source"><i></i> LOCAL LOGS <span id="source-status">正在连接</span></div></div>
+    </aside>
+
+    <main id="main" class="main">
+      <header class="topbar"><div class="breadcrumb"><span>工作台</span><span class="slash">/</span><span>实验观测</span></div><div class="top-actions"><span id="updated-at" class="updated-at">尚未刷新</span><button id="refresh-button" class="button button-outline small"><span data-icon="refresh"></span><span>刷新日志</span></button></div></header>
+      <div class="page-content">
+        <section class="page-heading"><div><div class="eyebrow"><span class="blue-line"></span> WORKFLOW INTELLIGENCE</div><h1>工作流与测试记录<span class="heading-dot">.</span></h1><p>从任务规划到 Skill 继承，追踪完整执行路径与原始证据。</p></div><span class="local-badge"><span data-icon="database"></span> 本地实验</span></section>
+        <div id="global-notice" class="global-notice" hidden role="status"></div>
+        <section id="run-overview" class="run-overview" aria-label="当前实验概览"></section>
+        <div id="workspace" class="workspace" hidden>
+          <div class="workflow-column">
+            <section class="panel workflow-panel" aria-label="任务执行流程">
+              <div class="panel-heading"><div><div class="section-overline">EXECUTION MAP</div><h2>任务执行流 <span id="workflow-task-title"></span></h2></div><div id="task-status"></div></div>
+              <div class="task-bar"><div id="task-tabs" class="task-tabs" role="tablist" aria-label="选择 Task"></div><div class="task-switch-hint">逐任务查看</div></div>
+              <div id="task-summary" class="task-summary"></div>
+              <div class="workflow-map-wrap"><div id="workflow-map" class="workflow-map" aria-label="可点击的工作流环节"></div></div>
+              <div class="map-footer"><div class="legend"><span><i class="legend-dot completed"></i>已完成</span><span><i class="legend-dot running"></i>进行中</span><span><i class="legend-dot pending"></i>待执行 / 未记录</span><span><i class="legend-dot failed"></i>错误</span></div><span class="map-hint"><span data-icon="cursor"></span> 点击环节查看详情</span></div>
+            </section>
+
+            <section class="panel evolution-panel" aria-label="Skill 演化链">
+              <div class="panel-heading compact"><div><div class="section-overline">CONTINUOUS EVOLUTION</div><h2>Skill 演化链</h2></div><span class="subtle-tag">跨 Task 继承</span></div>
+              <div id="evolution-chain" class="evolution-chain"></div>
+              <div id="evolution-note" class="evolution-note"></div>
+            </section>
+
+            <section class="panel questions-panel" aria-label="QA 执行记录">
+              <div class="panel-heading compact"><div><div class="section-overline">QUESTION EXPLORER</div><h2>逐条问答 <span id="question-total" class="count-inline"></span></h2></div><span id="qa-completion" class="muted"></span></div>
+              <div class="question-toolbar"><label class="search-box"><span data-icon="search"></span><input id="question-search" type="search" placeholder="搜索问题、回答或 ID…" aria-label="搜索问答"></label><select id="question-status-filter" aria-label="筛选问答状态"><option value="all">全部状态</option><option value="completed">已完成</option><option value="running">进行中</option><option value="pending">待执行 / 未记录</option><option value="failed">错误</option><option value="skipped">跳过 / 拒绝</option></select></div>
+              <div id="questions-list" class="questions-list"></div>
+              <div class="pagination"><span id="pagination-info"></span><div><button id="previous-page" class="icon-button" aria-label="上一页"><span data-icon="chevron-left"></span></button><span id="page-info"></span><button id="next-page" class="icon-button" aria-label="下一页"><span data-icon="chevron-right"></span></button></div></div>
+            </section>
+          </div>
+
+          <aside class="panel inspector" id="inspector" aria-label="环节详情" tabindex="-1">
+            <div class="inspector-heading"><div><div class="section-overline">TRACE INSPECTOR</div><h2 id="inspector-title">环节详情</h2></div><div id="inspector-status"></div></div>
+            <div id="inspector-context" class="inspector-context"></div>
+            <div id="inspector-tabs" class="inspector-tabs" role="tablist" aria-label="详情视图"></div>
+            <div id="component-call-selector-wrap" class="call-selector-wrap" hidden><label for="component-call-selector">组件函数调用</label><select id="component-call-selector"></select><div id="component-call-meta" class="call-meta"></div></div>
+            <div id="call-selector-wrap" class="call-selector-wrap" hidden><label for="call-selector">模型调用</label><select id="call-selector"></select><div id="call-meta" class="call-meta"></div></div>
+            <div id="detail-body" class="detail-body" aria-live="polite"></div>
+          </aside>
+        </div>
+        <section id="empty-state" class="empty-state panel" hidden><div class="empty-orbit"><img src="/xragos-logo.png" alt="" width="72" height="72"></div><h2>等待第一段执行轨迹</h2><p>发现本地运行后，任务规划、模型调用与 Skill 演化将在这里展开。</p><button class="button button-primary" id="empty-refresh"><span data-icon="refresh"></span>重新读取日志</button></section>
+        <footer class="page-footer"><span>XRAGOS <span class="footer-divider">/</span> Evidence, connected.</span><span>所有状态来自本地记录 · 缺失信息会明确标注</span></footer>
+      </div>
+    </main>
+  </div>
+</body>
+</html>

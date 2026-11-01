@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -14,6 +14,7 @@ from framework.data_groups import DataGroup, GroupDataError, load_group
 from framework.interfaces import RESERVED_REQUEST_FIELDS
 
 from .config import SelfOptimizationConfig, load_self_optimization_config
+from .scheduling import QAExecutionConfig, parse_qa_execution
 
 
 class TaskWorkflowConfigError(ValueError):
@@ -27,7 +28,6 @@ class RAGTaskConfig:
     name: str
     dataset: str
     data_path: Path
-    max_examples: int | None = None
     request: Mapping[str, Any] = field(default_factory=dict)
 
 
@@ -38,9 +38,10 @@ class TaskWorkflowConfig:
     config_path: Path
     self_optimization: SelfOptimizationConfig
     tasks: tuple[RAGTaskConfig, ...]
+    group: DataGroup
     max_process_examples: int = 5
-    group: DataGroup | None = None
     validation_examples_per_task: int = 3
+    qa_execution: QAExecutionConfig = field(default_factory=QAExecutionConfig)
 
 
 def load_task_workflow_config(
@@ -48,18 +49,17 @@ def load_task_workflow_config(
     *,
     group_path: str | Path | None = None,
     shuffle_seed: int | None = None,
+    policy_mode: str | None = None,
 ) -> TaskWorkflowConfig:
     """加载任务流 YAML，并解析其引用的本地自优化配置和数据文件。"""
     config_path = Path(path).resolve()
     payload = _read_yaml(config_path)
     version = payload.get("schema_version")
-    if type(version) is not int or version not in (1, 2):
+    if type(version) is not int or version != 2:
         raise TaskWorkflowConfigError(
-            "Only task workflow schema_version 1 or 2 is supported"
+            "Only Group task workflow schema_version 2 is supported"
         )
-    allowed_root = {"schema_version", "self_optimization_config", "workflow"}
-    if version == 2:
-        allowed_root.update({"group_path", "shuffle_seed"})
+    allowed_root = {"schema_version", "self_optimization_config", "workflow", "group_path", "shuffle_seed"}
     unknown_root = set(payload) - allowed_root
     if unknown_root:
         raise TaskWorkflowConfigError(
@@ -69,10 +69,11 @@ def load_task_workflow_config(
         _required_text(payload, "self_optimization_config"),
         config_path,
     )
-    self_optimization = load_self_optimization_config(self_optimization_path)
+    self_optimization = load_self_optimization_config(
+        self_optimization_path, policy_mode=policy_mode,
+    )
     workflow = _required_mapping(payload, "workflow")
-    allowed_workflow = {"max_process_examples", "validation_examples_per_task"}
-    allowed_workflow.update({"request"} if version == 2 else {"tasks"})
+    allowed_workflow = {"max_process_examples", "validation_examples_per_task", "request", "qa_execution"}
     unknown_workflow = set(workflow) - allowed_workflow
     if unknown_workflow:
         raise TaskWorkflowConfigError(
@@ -86,95 +87,33 @@ def load_task_workflow_config(
         workflow.get("validation_examples_per_task", 3),
         "workflow.validation_examples_per_task",
     )
-    group = None
-    if version == 2 or group_path is not None:
-        source = (
-            Path(group_path).resolve()
-            if group_path is not None
-            else _resolve_path(_required_text(payload, "group_path"), config_path)
-        )
-        seed = payload.get("shuffle_seed", 42) if shuffle_seed is None else shuffle_seed
-        try:
-            group = load_group(source, shuffle_seed=seed)
-        except GroupDataError as exc:
-            raise TaskWorkflowConfigError(str(exc)) from exc
-        request = _parse_request(workflow.get("request", {}), "workflow.request")
-        tasks = tuple(
-            RAGTaskConfig(task.task_id, group.dataset, task.path, request=request)
-            for task in group.tasks
-        )
-        return TaskWorkflowConfig(
-            config_path=config_path,
-            self_optimization=self_optimization,
-            tasks=tasks,
-            max_process_examples=max_process_examples,
-            group=group,
-            validation_examples_per_task=validation_examples,
-        )
-    if shuffle_seed is not None:
-        raise TaskWorkflowConfigError("shuffle_seed requires a Group workflow")
-    tasks_value = workflow.get("tasks")
-    if isinstance(tasks_value, (str, bytes, bytearray)) or not isinstance(
-        tasks_value,
-        Sequence,
-    ):
-        raise TaskWorkflowConfigError("workflow.tasks must be a list")
-    tasks = tuple(
-        _parse_task(value, index=index, config_path=config_path)
-        for index, value in enumerate(tasks_value)
+    try:
+        qa_execution = parse_qa_execution(workflow.get("qa_execution", {}))
+    except ValueError as exc:
+        raise TaskWorkflowConfigError(str(exc)) from exc
+    source = (
+        Path(group_path).resolve()
+        if group_path is not None
+        else _resolve_path(_required_text(payload, "group_path"), config_path)
     )
-    if not tasks:
-        raise TaskWorkflowConfigError("workflow.tasks must not be empty")
-    names = [task.name for task in tasks]
-    if len(names) != len(set(names)):
-        raise TaskWorkflowConfigError("workflow task names must be unique")
+    seed = payload.get("shuffle_seed", 42) if shuffle_seed is None else shuffle_seed
+    try:
+        group = load_group(source, shuffle_seed=seed)
+    except GroupDataError as exc:
+        raise TaskWorkflowConfigError(str(exc)) from exc
+    request = _parse_request(workflow.get("request", {}), "workflow.request")
+    tasks = tuple(
+        RAGTaskConfig(task.task_id, group.dataset, task.path, request=request)
+        for task in group.tasks
+    )
     return TaskWorkflowConfig(
         config_path=config_path,
         self_optimization=self_optimization,
         tasks=tasks,
+        group=group,
         max_process_examples=max_process_examples,
         validation_examples_per_task=validation_examples,
-    )
-
-
-def _parse_task(
-    value: Any,
-    *,
-    index: int,
-    config_path: Path,
-) -> RAGTaskConfig:
-    """解析并校验一个 task 的名称、数据、样本上限和请求覆盖值。"""
-    if not isinstance(value, Mapping):
-        raise TaskWorkflowConfigError(f"workflow.tasks[{index}] must be a mapping")
-    allowed = {"name", "dataset", "data_path", "max_examples", "request"}
-    unknown = set(value) - allowed
-    if unknown:
-        raise TaskWorkflowConfigError(
-            f"workflow.tasks[{index}] contains unknown keys: {sorted(unknown)}"
-        )
-    name = _required_text(value, "name", prefix=f"workflow.tasks[{index}]")
-    dataset = _required_text(value, "dataset", prefix=f"workflow.tasks[{index}]")
-    data_path = _resolve_path(
-        _required_text(value, "data_path", prefix=f"workflow.tasks[{index}]"),
-        config_path,
-    )
-    if not data_path.is_file():
-        raise TaskWorkflowConfigError(f"Task data file does not exist: {data_path}")
-    max_examples_value = value.get("max_examples")
-    if max_examples_value is not None:
-        max_examples = _positive_int(
-            max_examples_value,
-            f"workflow.tasks[{index}].max_examples",
-        )
-    else:
-        max_examples = None
-    request = _parse_request(value.get("request", {}), f"workflow.tasks[{index}].request")
-    return RAGTaskConfig(
-        name=name,
-        dataset=dataset,
-        data_path=data_path,
-        max_examples=max_examples,
-        request=dict(request),
+        qa_execution=qa_execution,
     )
 
 
@@ -215,14 +154,11 @@ def _required_mapping(payload: Mapping[str, Any], key: str) -> Mapping[str, Any]
 def _required_text(
     payload: Mapping[str, Any],
     key: str,
-    *,
-    prefix: str | None = None,
 ) -> str:
     """读取 task 或根配置中的必需非空字符串。"""
     value = payload.get(key)
-    field_name = f"{prefix}.{key}" if prefix else key
     if not isinstance(value, str) or not value.strip():
-        raise TaskWorkflowConfigError(f"'{field_name}' must be a non-empty string")
+        raise TaskWorkflowConfigError(f"'{key}' must be a non-empty string")
     return value.strip()
 
 

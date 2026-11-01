@@ -22,6 +22,10 @@ MANAGE_SELECTION_MAX_ATTEMPTS = 3
 AGENTIC_SELECTION_MAX_ATTEMPTS = 3
 COMPONENT_SELECTION_MAX_ATTEMPTS = 3
 _StageOutput = TypeVar("_StageOutput")
+_TASK_ROUTING_OPTIONS = (
+    "top_k", "max_tokens", "max_iterations", "rank_constant",
+    "rewrite_temperature", "rewrite_max_tokens", "critic_max_tokens",
+)
 
 
 class SelectionError(ValueError):
@@ -295,6 +299,56 @@ def _call_stage_with_repair(
                 "Do not include Markdown or commentary."
             )
     raise SelectionError(f"{stage} selection failed")  # pragma: no cover
+
+
+def build_task_selection_request(
+    requests: Sequence[Mapping[str, Any]],
+    *,
+    task_id: str,
+    dataset: str,
+    question_ids: Sequence[str],
+) -> dict[str, Any]:
+    """Describe every Task question for one shared plan, without annotations/text.
+
+    Only question text, question IDs, known execution options, and corpus shape
+    enter this request. No answer, relevant-document label, or document body is
+    copied, including when a caller supplies extra annotation keys.
+    """
+    if not requests or len(requests) != len(question_ids):
+        raise SelectionError("Task routing requires every question and matching IDs")
+    summaries = []
+    questions = []
+    for request, question_id in zip(requests, question_ids, strict=True):
+        query = request.get("query")
+        if not isinstance(query, str) or not query.strip():
+            raise SelectionError("Every Task routing question must be non-empty text")
+        if not isinstance(question_id, str) or not question_id.strip():
+            raise SelectionError("Every Task routing question must have an ID")
+        allowed = {key: request[key] for key in _TASK_ROUTING_OPTIONS if key in request}
+        allowed["documents"] = request.get("documents", ())
+        summaries.append(_build_selection_request(allowed))
+        questions.append({"question_id": question_id, "query": query})
+    result = {
+        "selection_scope": "task_shared",
+        "task_id": task_id,
+        "dataset": dataset,
+        "question_count": len(questions),
+        "questions": questions,
+        "routing_instruction": (
+            "Choose exactly one shared Agentic Skill and one shared set of Component "
+            "bindings for ALL questions in this Task. Consider every question, not "
+            "only the first. Each question will be executed independently with its "
+            "own query and evidence using that same plan. Do not answer the questions."
+        ),
+    }
+    # Check every request before sharing metadata; heterogeneous Tasks retain
+    # their per-question options and corpus statistics instead of using QA 1.
+    if all(summary == summaries[0] for summary in summaries):
+        result["shared_execution_context"] = summaries[0]
+    else:
+        for question, summary in zip(questions, summaries, strict=True):
+            question["execution_context"] = summary
+    return result
 
 
 def select_rag_plan(

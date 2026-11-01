@@ -1,4 +1,0 @@
-interface:
-  display_name: "Conditional RAG"
-  short_description: "Route requests through lexical, semantic, or hybrid retrieval"
-  default_prompt: "Use $agentic-conditional-rag to classify the request, select the appropriate retrieval route, and generate a grounded answer."

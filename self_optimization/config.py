@@ -26,7 +26,6 @@ class SelfOptimizationConfigError(ValueError):
 class OptimizationSettings:
     """控制优化循环、提示长度和修改事务安全边界。"""
 
-    max_examples: int | None = 10
     temperature: float = 0.1
     max_tokens: int = 8192
     max_prompt_chars: int = 120_000
@@ -38,15 +37,11 @@ class OptimizationSettings:
     max_proposal_attempts: int = 3
     allow_new_files: bool = False
     continue_on_optimization_error: bool = True
-    # Compatibility name: validate execution and interfaces, never performance.
+    # Validate execution and interfaces; answer quality never gates retention.
     verify_revision_execution: bool = True
 
     def __post_init__(self) -> None:
         """校验优化轮数、模型参数和上下文边界均可安全执行。"""
-        if self.max_examples is not None and self.max_examples <= 0:
-            raise SelfOptimizationConfigError(
-                "optimization.max_examples must be positive or null"
-            )
         if not 0.0 <= self.temperature <= 2.0:
             raise SelfOptimizationConfigError(
                 "optimization.temperature must be between 0 and 2"
@@ -78,9 +73,12 @@ class SelfOptimizationConfig:
     runs_root: Path
     run_id: str | None = None
     optimization: OptimizationSettings = field(default_factory=OptimizationSettings)
+    policy_mode: str = "api"
 
 
-def load_self_optimization_config(path: str | Path) -> SelfOptimizationConfig:
+def load_self_optimization_config(
+    path: str | Path, *, policy_mode: str | None = None,
+) -> SelfOptimizationConfig:
     """从 YAML 加载自优化配置，并相对配置文件解析所有路径。"""
     config_path = Path(path).resolve()
     payload = _read_yaml(config_path)
@@ -112,7 +110,9 @@ def load_self_optimization_config(path: str | Path) -> SelfOptimizationConfig:
     if run_id_value is not None and not run_id:
         raise SelfOptimizationConfigError("workspace.run_id cannot be empty")
 
-    optimizer = _parse_service(_required_mapping(payload, "optimizer"))
+    optimizer, selected_mode = _parse_optimizer(
+        _required_mapping(payload, "optimizer"), policy_mode=policy_mode,
+    )
     optimization_payload = payload.get("optimization", {})
     if not isinstance(optimization_payload, Mapping):
         raise SelfOptimizationConfigError("optimization must be a mapping")
@@ -124,6 +124,7 @@ def load_self_optimization_config(path: str | Path) -> SelfOptimizationConfig:
         runs_root=runs_root,
         run_id=run_id,
         optimization=optimization,
+        policy_mode=selected_mode,
     )
 
 
@@ -210,10 +211,53 @@ def _parse_service(payload: Mapping[str, Any]) -> APIServiceConfig:
     )
 
 
+def _parse_optimizer(
+    payload: Mapping[str, Any], *, policy_mode: str | None,
+) -> tuple[APIServiceConfig, str]:
+    """Select one explicit Policy service without resolving inactive credentials."""
+    if policy_mode is not None:
+        _validate_policy_mode(policy_mode)
+    if "mode" not in payload and "profiles" not in payload:
+        if policy_mode == "local":
+            raise SelfOptimizationConfigError(
+                "--policy-mode local requires optimizer.mode/profiles; "
+                "a flat optimizer is an API service"
+            )
+        return _parse_service(payload), "api"
+    if set(payload) != {"mode", "profiles"}:
+        raise SelfOptimizationConfigError(
+            "optimizer mode/profiles cannot be mixed with flat service fields "
+            "and requires exactly mode and profiles"
+        )
+    configured_mode = payload["mode"]
+    _validate_policy_mode(configured_mode)
+    profiles = _required_mapping(payload, "profiles")
+    if set(profiles) != {"local", "api"}:
+        raise SelfOptimizationConfigError(
+            "optimizer.profiles must contain exactly local and api"
+        )
+    # Parse both service shapes, but credentials are resolved only when the
+    # selected service is passed to create_optimizer_model.
+    services = {
+        mode: _parse_service(_required_mapping(profiles, mode))
+        for mode in ("local", "api")
+    }
+    if services["local"].base_url is None:
+        raise SelfOptimizationConfigError(
+            "optimizer.profiles.local.base_url is required for an explicit local endpoint"
+        )
+    selected_mode = configured_mode if policy_mode is None else policy_mode
+    return services[selected_mode], selected_mode
+
+
+def _validate_policy_mode(value: Any) -> None:
+    if not isinstance(value, str) or value not in {"local", "api"}:
+        raise SelfOptimizationConfigError("optimizer mode must be local or api")
+
+
 def _parse_optimization(payload: Mapping[str, Any]) -> OptimizationSettings:
-    """解析逐样本优化开关、模型调用参数和上下文限制。"""
+    """解析 Task 优化开关、模型调用参数和上下文限制。"""
     allowed = {
-        "max_examples",
         "temperature",
         "max_tokens",
         "max_prompt_chars",
@@ -232,15 +276,7 @@ def _parse_optimization(payload: Mapping[str, Any]) -> OptimizationSettings:
         raise SelfOptimizationConfigError(
             f"optimization contains unknown keys: {sorted(unknown)}"
         )
-    max_examples_value = payload.get("max_examples", 10)
-    if max_examples_value is not None and (
-        isinstance(max_examples_value, bool) or not isinstance(max_examples_value, int)
-    ):
-        raise SelfOptimizationConfigError(
-            "optimization.max_examples must be a positive integer or null"
-        )
     return OptimizationSettings(
-        max_examples=max_examples_value,
         temperature=float(payload.get("temperature", 0.1)),
         max_tokens=_positive_int(payload.get("max_tokens", 8192), "max_tokens"),
         max_prompt_chars=_positive_int(

@@ -6,7 +6,7 @@
 
 [English](README.md) · [简体中文](README.zh-CN.md)
 
-XRAGOS is a framework for adapting retrieval-augmented generation by **selecting and revising executable Skills**. A frozen **Executor Model** selects a workflow for each question and powers its language-model components. A separately configured **Policy Model** uses Task-level feedback to revise one participating Skill in an isolated working copy. Later Tasks use the accepted revisions; model weights are never updated.
+XRAGOS is a framework for adapting retrieval-augmented generation by **selecting and revising executable Skills**. A frozen **Executor Model** selects one shared workflow for all questions in a Task and powers its language-model components. A separately configured **Policy Model** uses Task-level feedback to revise one participating Skill in an isolated working copy. Later Tasks plan again using the accepted revisions; model weights are never updated.
 
 [Development guide (中文 Word)](docs/DEVELOPMENT.docx) · [Technical design and full Skill reference (中文 Word)](docs/TECHNICAL_DESIGN.docx) · [Data format (中文)](data/README.md)
 
@@ -14,13 +14,19 @@ XRAGOS is a framework for adapting retrieval-augmented generation by **selecting
 
 | Layer | Responsibility |
 |---|---|
-| **Manage** | Turn the question, corpus summary, and constraints into workflow-selection guidance. |
+| **Manage** | Turn all Task questions, the corpus summary, and execution constraints into shared workflow-selection guidance. |
 | **Agentic** | Define control flow and typed component slots: sequential, multi-branch, conditional, iterative, or complexity-routed execution. |
 | **Component** | Implement an atomic capability: retrieval, rewriting, reranking, classification, generation, or critique. |
 
-For each QA, the Executor reads Manage guidance, selects one Agentic Skill, then selects compatible Components for its slots. The framework checks the bindings, loads the selected Python scripts, and executes the workflow. Selection progressively exposes Skill instructions; the entire Skill library is not placed in every prompt.
+At the start of each Task, the Executor reads all selected questions, produces Manage guidance, selects one Agentic Skill, and binds compatible Components. These are three sequential model stages, normally three requests per Task. Every QA in that Task reuses the same route and bindings while retaining its own query, retrieval, and answer generation. Routing receives question text and corpus statistics; gold answers, gold document IDs, and full corpus text stay outside routing prompts. Selection progressively exposes Skill instructions.
 
 After each completed Task, all selected QA contribute metrics to one optimization event. The Policy selects one participating Skill and proposes bounded file replacements. The framework checks the edit scope, Python code, and Skill contracts. With the supplied configuration, it also replays up to three participating QA to check execution and interface contracts. Revisions are retained when these operational checks pass; execution or contract failures restore the previous working copy. Performance metrics inform later Policy feedback and do not decide whether a revision is retained. See the [execution and optimization design](docs/TECHNICAL_DESIGN.docx).
+
+The execution order is **Task 1 shared plan → its 50 QA → evaluation → one logical optimization round → Task 2 shared plan using the resulting Skills → its 50 QA → evaluation → one logical optimization round**. Selection, editing, and format-repair requests are counted separately within that optimization round. Execution-validation replays are recorded separately from the 50 primary QA. Reports declare `selection_scope="task_shared"` and `revision_validation_mode="execution_only"`; `verify_revision_execution` enables execution and interface checks.
+
+Policy selection and editing have separate JSON contracts. Selection returns only `selected_skill` and `rationale`. Editing returns only `{"edits":[{"path":"exact-editable-path","content":"complete replacement text"}]}`; each edit contains exactly `path` and `content`. File permissions and truncation metadata belong to the input and must never be copied into an edit. Format errors receive bounded repair attempts with the exact validation error, and rejected proposals remain in the audit record.
+
+Policy feedback includes every executed QA's metrics. Detailed traces are sampled across the Task and share one plan; the character budget may reduce the number of complete trace examples, with included and omitted counts recorded. This changes feedback size only. Primary QA execution and the complete editable Skill source are preserved.
 
 ## Data: Group → Corpus + Tasks → QA
 
@@ -60,7 +66,11 @@ Copy each template to its local counterpart **only if the local file does not al
 | [`self_optimization/settings.example.yaml`](self_optimization/settings.example.yaml) → `self_optimization/settings.yaml` | Independent Policy, revision checks, working-copy and output location |
 | [`self_optimization/task_flow.example.yaml`](self_optimization/task_flow.example.yaml) → `self_optimization/task_flow.yaml` | Group, shuffle seed, Task feedback and validation sample limits |
 
-Set the model IDs and endpoints to those offered by your service. Use `api_key_env` for a credential supplied through your shell or secret manager, with `api_key: null`; the templates reference `VVEAI_API_KEY`. Local configuration files are Git-ignored. Executor and Policy support OpenAI-compatible Chat Completions and Anthropic Messages. Embedding supports OpenAI-compatible endpoints or local Sentence Transformers; the template selects local BGE embeddings.
+Set the model IDs and endpoints to those offered by your service. Use `api_key_env` for a credential supplied through your shell or secret manager, with `api_key: null`; the templates reference `DASHSCOPE_API_KEY`. Local configuration files are Git-ignored. Executor and Policy support OpenAI-compatible Chat Completions and Anthropic Messages. Embedding supports OpenAI-compatible endpoints or local Sentence Transformers; the template selects local BGE embeddings.
+
+The default Policy is now API mode with `qwen3.5-27b` on Alibaba Cloud Model Studio; the local `qwen3.5-9b` profile remains available and requires a separately deployed service.
+
+Policy supports explicit `local` and `api` modes in `optimizer.mode`, with separate service settings under `optimizer.profiles.local` and `optimizer.profiles.api`. Override the saved choice for one run with `--policy-mode local` or `--policy-mode api`. The local template targets a self-hosted `qwen3.5-9b` at `http://127.0.0.1:18081/v1`; deploy that service first and match its model alias. API models must be available to your credential. Modes never fall back to another endpoint or model. `options.extra_body.stream: true` enables OpenAI SSE responses, which are collected into complete text before proposal validation.
 
 YAML paths resolve relative to the file containing them; CLI `--group` and `--config` paths resolve from the current directory. Local BGE, BGE reranker, GPT-2 evaluation weights, and NLTK resources may need downloading on first use. See [configuration, dependencies, and troubleshooting](docs/DEVELOPMENT.docx).
 
@@ -101,14 +111,36 @@ python -B -m self_optimization --group data/groups/triviaqa-train-001
 
 Use `--shuffle-seed` to override Corpus order, `--config` for another task-flow configuration, and `--run-id` for a new, unique run name. Each Group invocation starts a fresh Skill copy; revisions are inherited across Tasks within that run.
 
-All CLI entrypoints use the same Group/Task runner: `python -m self_optimization`, `python run_self_optimization.py`, `python run_task_flow.py`, `ragskill-self-optimize`, and `ragskill-task-flow`. Reinstall editable metadata after updating an older checkout to refresh console entrypoints.
+QA within one Task can run concurrently while sharing its plan and Skill version. Use `--qa-mode adaptive --qa-max-workers 8` for bounded throughput-based adjustment, `--qa-mode fixed --qa-max-workers 4` for a fixed limit, or `--qa-mode serial`. Task optimization and the next Task wait for all QA to finish. See [parallel execution](docs/PARALLEL_EXECUTION.md) for configuration, measurements, resource sharing, and custom-client requirements.
+
+To continue an interrupted run, keep the original configuration, Group, selection limits, source version, and run ID, and add `--resume`:
+
+```sh
+python -B -m self_optimization --group data/groups/hotpotqa-train-001 --run-id experiment-001 --resume
+```
+
+Completed Tasks remain committed. An incomplete Task restores its starting Skill snapshot, plans again, and reruns that Task; its earlier partial answers remain diagnostic evidence. `--freeze-skills` runs the same Task-shared routing without constructing or calling the Policy model. `--task-budget-seconds` pauses at the next completed Task boundary with exit code 75, allowing continuation with `--resume`.
+
+Use `python -m self_optimization` or the installed `ragskill-task-flow` command; both run the same Group/Task workflow. Reinstall the editable package after updating a checkout to refresh console entrypoints.
+
+## Visualize test workflows
+
+Start the local viewer for existing experiments and runs in progress:
+
+```bash
+python -B -m visualization --runtime-root ../Preparation/runtime
+```
+
+Open `http://127.0.0.1:8765`, select a run and Task, then follow input → Manage → Agentic → Component → QA execution → evaluation → Policy selection/editing → validation → the next Task. Click a stage to inspect inputs, full prompts, actual models and responses, execution code, revision diffs, and inherited Skill hashes. Individual QA results and traces are selectable. Logical optimization rounds, model generate requests, HTTP attempts, and validation replays remain separate counts.
+
+The viewer reads local artifacts without calling models. Refresh is manual by default; change the port with `--port`. Installed checkouts also expose `ragskill-visualize`. Missing prompts or transport statistics in older runs are labeled unrecorded; current source code is never presented as historical execution evidence. See the [viewer guide](docs/VISUALIZATION.md).
 
 ## Python API
 
 ```python
 from self_optimization import (
     load_task_workflow_config,
-    run_self_optimization,
+    run_task_workflow,
     validate_task_workflow,
 )
 
@@ -117,11 +149,11 @@ config = load_task_workflow_config(
     group_path="data/groups/hotpotqa-train-001",
 )
 selection = validate_task_workflow(config, max_tasks=1, examples_per_task=1)
-report = run_self_optimization(config, max_tasks=1, examples_per_task=1)
+report = run_task_workflow(config, max_tasks=1, examples_per_task=1)
 print(report["group"]["group_id"], report["completed_tasks"])
 ```
 
-`run_self_optimization` aliases `run_task_workflow`; both accept `TaskWorkflowConfig`. The legacy per-sample runner is `run_sample_optimization`. For integration below the Task runner, `framework` exports `load_group`, `DataGroup` / `GroupTask` / `GroupQA`, `build_rag_request`, `select_rag_plan`, `compile_rag_command`, `run_rag`, `run_rag_from_config`, and evaluation helpers. See the [API and data contracts](docs/DEVELOPMENT.docx).
+`run_task_workflow` accepts `TaskWorkflowConfig` for one Group and its ordered Tasks. For integration below the Task runner, `framework` exports `load_group`, `DataGroup` / `GroupTask` / `GroupQA`, `build_rag_request`, `select_rag_plan`, `compile_rag_command`, `run_rag`, `run_rag_from_config`, and evaluation helpers. See the [API and data contracts](docs/DEVELOPMENT.docx).
 
 ## Included Skills
 
@@ -151,6 +183,9 @@ With the supplied templates, outputs are stored beside the repository under `../
 |---|---|
 | `runs/<run-id>/task-flow.report.json` | Group/selection metadata, QA results, metrics, Task summaries, optimization outcomes |
 | `runs/<run-id>/task-flow.events.jsonl` | Incremental workflow, Task, QA, and optimization events |
+| `runs/<run-id>/model-captures/` | Redacted model I/O, per-component inputs/outputs, execution source snapshots and capture provenance |
+| `runs/<run-id>/task_routes/<task>/<attempt>/` | One routing request containing all Task questions, the shared plan, and hashes |
+| `runs/<run-id>/checkpoints/` | Durable Task commits, starting snapshots, interrupted attempts, and resume identity |
 | `runs/<run-id>/skills/` and `workspace.json` | Current working Skill copy and source identity |
 | `runs/<run-id>/optimizer_calls/task-XXXX/` | Policy prompts, responses, attempts, proposal, and outcome |
 | `runs/<run-id>/revisions/revision-XXXX/` | Before snapshot, proposal, validation outcome, and diff when application succeeds |

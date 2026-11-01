@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import codecs
+import hashlib
 import json
+import math
 import os
 import time
 from collections.abc import Callable, Mapping, Sequence
+from contextvars import ContextVar
 from dataclasses import dataclass, field
+from http.client import HTTPException
 from threading import Lock
 from typing import Any, Protocol
 from urllib.error import HTTPError, URLError
@@ -17,6 +22,13 @@ JsonTransport = Callable[
     [str, Mapping[str, str], Mapping[str, Any], float],
     Mapping[str, Any],
 ]
+
+
+class _UnsetAPIKey:
+    """Distinguish an omitted factory key from explicitly anonymous config."""
+
+
+_API_KEY_UNSET = _UnsetAPIKey()
 
 
 class ModelAPIError(RuntimeError):
@@ -30,6 +42,9 @@ class ModelAPIError(RuntimeError):
         retryable: bool = False,
         error_category: str | None = None,
         provider_error_kind: str | None = None,
+        provider_details: Mapping[str, Any] | None = None,
+        response_body_sha256: str | None = None,
+        response_body_bytes: int | None = None,
     ) -> None:
         """保存错误消息以及供请求层判断的 HTTP 状态与可重试标记。"""
         super().__init__(message)
@@ -37,8 +52,29 @@ class ModelAPIError(RuntimeError):
         self.retryable = retryable
         self.error_category = error_category or ("http" if status_code is not None else "api")
         self.provider_error_kind = provider_error_kind
+        self.provider_details = dict(provider_details or {})
+        self.response_body_sha256 = response_body_sha256
+        self.response_body_bytes = response_body_bytes
         self.attempt_count = 0
         self.error_counts: dict[str, int] = {}
+
+    def diagnostics(self) -> dict[str, Any]:
+        """Return bounded, JSON-safe request diagnostics without raw response text.
+
+        Built-in transports whitelist provider identifiers and summarize messages;
+        neither request headers, credentials, prompts nor error bodies are retained.
+        """
+        return {
+            "error_category": self.error_category,
+            "status_code": self.status_code,
+            "retryable": self.retryable,
+            "provider_error_kind": self.provider_error_kind,
+            "provider_details": dict(self.provider_details),
+            "attempt_count": self.attempt_count,
+            "error_counts": dict(self.error_counts),
+            "response_body_sha256": self.response_body_sha256,
+            "response_body_bytes": self.response_body_bytes,
+        }
 
 
 _REQUEST_STAT_KEYS = (
@@ -90,13 +126,17 @@ class OpenAICompatibleModelClient:
     timeout_seconds: float = 600.0
     max_retries: int = 2
     retry_backoff_seconds: float = 2.0
-    extra_headers: Mapping[str, str] = field(default_factory=dict)
+    extra_headers: Mapping[str, str] = field(default_factory=dict, repr=False)
     extra_body: Mapping[str, Any] = field(default_factory=dict, repr=False)
     transport: JsonTransport | None = field(default=None, repr=False)
     _request_counts: dict[str, int] = field(
         default_factory=lambda: dict.fromkeys(_REQUEST_STAT_KEYS, 0), init=False, repr=False,
     )
     _statistics_lock: Any = field(default_factory=Lock, init=False, repr=False)
+    _last_request_counts: ContextVar = field(
+        default_factory=lambda: ContextVar("openai_last_request_statistics", default=None),
+        init=False, repr=False,
+    )
 
     def __post_init__(self) -> None:
         """补充默认 HTTP transport，并校验基础配置。"""
@@ -107,6 +147,8 @@ class OpenAICompatibleModelClient:
         _validate_retry_options(self.max_retries, self.retry_backoff_seconds)
         if not isinstance(self.extra_body, Mapping):
             raise ValueError("extra_body must be a mapping")
+        if "stream" in self.extra_body and not isinstance(self.extra_body["stream"], bool):
+            raise ValueError("extra_body.stream must be a boolean")
         reserved_body_keys = {
             "model",
             "messages",
@@ -119,7 +161,7 @@ class OpenAICompatibleModelClient:
                 f"extra_body cannot override request keys: {sorted(overlap)}"
             )
         if self.transport is None:
-            self.transport = _post_json
+            self.transport = _post_openai
 
     def request_statistics(self) -> dict[str, int]:
         """Cumulative logical calls, transport attempts and disjoint error counts.
@@ -131,8 +173,20 @@ class OpenAICompatibleModelClient:
             return dict(self._request_counts)
 
     def _record_request_stat(self, key: str) -> None:
+        current = self._last_request_counts.get()
+        if current is not None:
+            current[key] += 1
         with self._statistics_lock:
             self._request_counts[key] += 1
+
+    def last_request_statistics(self) -> dict[str, int] | None:
+        """Counters for this execution context's last call, never a shared delta.
+
+        A worker that has not made a call has no observation. Concurrent workers
+        retain independent dictionaries while request_statistics stays cumulative.
+        """
+        current = self._last_request_counts.get()
+        return dict(current) if current is not None else None
 
     def generate(
         self,
@@ -143,6 +197,7 @@ class OpenAICompatibleModelClient:
         max_tokens: int | None = None,
     ) -> str:
         """调用 OpenAI-compatible Chat Completions 并提取首个文本答案。"""
+        self._last_request_counts.set(None)
         messages = []
         if system:
             messages.append({"role": "system", "content": system})
@@ -160,6 +215,7 @@ class OpenAICompatibleModelClient:
         if self.api_key:
             headers["authorization"] = f"Bearer {self.api_key}"
         assert self.transport is not None
+        self._last_request_counts.set(dict.fromkeys(_REQUEST_STAT_KEYS, 0))
         return _request_json_with_retries(
             self.transport,
             _endpoint(self.base_url, "chat/completions"),
@@ -188,7 +244,7 @@ class OpenAICompatibleEmbeddingClient:
     timeout_seconds: float = 600.0
     max_retries: int = 2
     retry_backoff_seconds: float = 2.0
-    extra_headers: Mapping[str, str] = field(default_factory=dict)
+    extra_headers: Mapping[str, str] = field(default_factory=dict, repr=False)
     transport: JsonTransport | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
@@ -244,17 +300,22 @@ class SentenceTransformerEmbeddingClient:
         normalized = [str(text) for text in texts]
         if not normalized:
             return []
-        encoder = self._get_encoder()
-        try:
-            encoded = encoder.encode(
-                normalized,
-                batch_size=self.batch_size,
-                normalize_embeddings=self.normalize_embeddings,
-                convert_to_numpy=True,
-                show_progress_bar=False,
-            )
-        except Exception as exc:
-            raise ModelAPIError(f"Local embedding failed: {exc}") from exc
+        from .reranking import local_model_inference_lock
+
+        # Share the process GPU guard with BGE rather than overlapping multiple
+        # local models' peak allocations as independent QA workers arrive.
+        with local_model_inference_lock():
+            encoder = self._get_encoder()
+            try:
+                encoded = encoder.encode(
+                    normalized,
+                    batch_size=self.batch_size,
+                    normalize_embeddings=self.normalize_embeddings,
+                    convert_to_numpy=True,
+                    show_progress_bar=False,
+                )
+            except Exception as exc:
+                raise ModelAPIError(f"Local embedding failed: {exc}") from exc
         rows = encoded.tolist() if hasattr(encoded, "tolist") else encoded
         try:
             embeddings = [[float(value) for value in row] for row in rows]
@@ -270,19 +331,22 @@ class SentenceTransformerEmbeddingClient:
 
     def _get_encoder(self) -> Any:
         """延迟加载 sentence-transformers 模型，避免未使用向量检索时加载权重。"""
-        if self.encoder is not None:
+        from .reranking import local_model_inference_lock
+
+        with local_model_inference_lock():
+            if self.encoder is not None:
+                return self.encoder
+            try:
+                from sentence_transformers import SentenceTransformer
+            except ImportError as exc:
+                raise ModelAPIError(
+                    "Local embedding requires the 'sentence-transformers' package"
+                ) from exc
+            try:
+                self.encoder = SentenceTransformer(self.model, device=self.device)
+            except Exception as exc:
+                raise ModelAPIError(f"Cannot load local embedding model: {exc}") from exc
             return self.encoder
-        try:
-            from sentence_transformers import SentenceTransformer
-        except ImportError as exc:
-            raise ModelAPIError(
-                "Local embedding requires the 'sentence-transformers' package"
-            ) from exc
-        try:
-            self.encoder = SentenceTransformer(self.model, device=self.device)
-        except Exception as exc:
-            raise ModelAPIError(f"Cannot load local embedding model: {exc}") from exc
-        return self.encoder
 
 
 @dataclass(slots=True)
@@ -300,8 +364,16 @@ class AnthropicModelClient:
     timeout_seconds: float = 600.0
     max_retries: int = 2
     retry_backoff_seconds: float = 2.0
-    extra_headers: Mapping[str, str] = field(default_factory=dict)
+    extra_headers: Mapping[str, str] = field(default_factory=dict, repr=False)
     transport: JsonTransport | None = field(default=None, repr=False)
+    _request_counts: dict[str, int] = field(
+        default_factory=lambda: dict.fromkeys(_REQUEST_STAT_KEYS, 0), init=False, repr=False,
+    )
+    _statistics_lock: Any = field(default_factory=Lock, init=False, repr=False)
+    _last_request_counts: ContextVar = field(
+        default_factory=lambda: ContextVar("anthropic_last_request_statistics", default=None),
+        init=False, repr=False,
+    )
 
     def __post_init__(self) -> None:
         """补充默认 HTTP transport，并校验 Anthropic 必需配置。"""
@@ -315,6 +387,23 @@ class AnthropicModelClient:
         if self.transport is None:
             self.transport = _post_json
 
+    def request_statistics(self) -> dict[str, int]:
+        """Return aggregate generate/HTTP counters without request content."""
+        with self._statistics_lock:
+            return dict(self._request_counts)
+
+    def last_request_statistics(self) -> dict[str, int] | None:
+        """Return only the last generate in the calling worker's context."""
+        current = self._last_request_counts.get()
+        return dict(current) if current is not None else None
+
+    def _record_request_stat(self, key: str) -> None:
+        current = self._last_request_counts.get()
+        if current is not None:
+            current[key] += 1
+        with self._statistics_lock:
+            self._request_counts[key] += 1
+
     def generate(
         self,
         prompt: str,
@@ -324,6 +413,7 @@ class AnthropicModelClient:
         max_tokens: int | None = None,
     ) -> str:
         """调用 Anthropic Messages API 并拼接响应中的文本内容块。"""
+        self._last_request_counts.set(None)
         payload: dict[str, Any] = {
             "model": self.model,
             "messages": [{"role": "user", "content": prompt}],
@@ -341,7 +431,8 @@ class AnthropicModelClient:
             **self.extra_headers,
         }
         assert self.transport is not None
-        response = _request_json_with_retries(
+        self._last_request_counts.set(dict.fromkeys(_REQUEST_STAT_KEYS, 0))
+        return _request_json_with_retries(
             self.transport,
             _endpoint(self.base_url, "v1/messages"),
             headers,
@@ -349,15 +440,17 @@ class AnthropicModelClient:
             self.timeout_seconds,
             max_retries=self.max_retries,
             retry_backoff_seconds=self.retry_backoff_seconds,
+            response_parser=_extract_anthropic_text,
+            retry_structure_errors=False,
+            record_stat=self._record_request_stat,
         )
-        return _extract_anthropic_text(response)
 
 
 def create_model_client(
     provider: str,
     *,
     model: str,
-    api_key: str | None = None,
+    api_key: str | None | _UnsetAPIKey = _API_KEY_UNSET,
     base_url: str | None = None,
     **options: Any,
 ) -> ModelClient:
@@ -365,14 +458,14 @@ def create_model_client(
     normalized = provider.strip().lower().replace("_", "-")
     if normalized in {"openai", "openai-compatible"}:
         kwargs = dict(options)
-        if api_key is not None:
+        if api_key is not _API_KEY_UNSET:
             kwargs["api_key"] = api_key
         if base_url is not None:
             kwargs["base_url"] = base_url
         return OpenAICompatibleModelClient(model=model, **kwargs)
     if normalized == "anthropic":
         kwargs = dict(options)
-        if api_key is not None:
+        if api_key is not _API_KEY_UNSET:
             kwargs["api_key"] = api_key
         if base_url is not None:
             kwargs["base_url"] = base_url
@@ -384,7 +477,7 @@ def create_embedding_client(
     provider: str,
     *,
     model: str,
-    api_key: str | None = None,
+    api_key: str | None | _UnsetAPIKey = _API_KEY_UNSET,
     base_url: str | None = None,
     **options: Any,
 ) -> EmbeddingClient:
@@ -392,7 +485,7 @@ def create_embedding_client(
     normalized = provider.strip().lower().replace("_", "-")
     if normalized in {"openai", "openai-compatible"}:
         kwargs = dict(options)
-        if api_key is not None:
+        if api_key is not _API_KEY_UNSET:
             kwargs["api_key"] = api_key
         if base_url is not None:
             kwargs["base_url"] = base_url
@@ -402,7 +495,7 @@ def create_embedding_client(
         "sentence-transformer",
         "sentence-transformers",
     }:
-        if api_key:
+        if api_key is not _API_KEY_UNSET and api_key:
             raise ValueError("Local embedding provider does not accept api_key")
         if base_url is not None:
             raise ValueError("Local embedding provider does not accept base_url")
@@ -424,6 +517,7 @@ def _validate_retry_options(max_retries: int, retry_backoff_seconds: float) -> N
     if (
         isinstance(retry_backoff_seconds, bool)
         or not isinstance(retry_backoff_seconds, (int, float))
+        or not math.isfinite(retry_backoff_seconds)
         or retry_backoff_seconds < 0
     ):
         raise ValueError("retry_backoff_seconds must be non-negative")
@@ -439,11 +533,13 @@ def _request_json_with_retries(
     max_retries: int,
     retry_backoff_seconds: float,
     response_parser: Callable[[Mapping[str, Any]], Any] | None = None,
+    retry_structure_errors: bool = True,
     record_stat: Callable[[str], None] | None = None,
 ) -> Any:
     """Retry one shared request budget; optional OpenAI text validation is inside it.
 
-    Embeddings and Anthropic retain their existing transport-only retry boundary.
+    Explicit provider failures share this budget for every client. Malformed
+    normal envelopes for embeddings/Anthropic retain their nonretry boundary.
     """
     def record(key: str) -> None:
         if record_stat is not None:
@@ -457,20 +553,21 @@ def _request_json_with_retries(
             record("retries")
         try:
             response = transport(url, headers, payload, timeout_seconds)
+            _raise_provider_error(response)
             if response_parser is not None:
-                _raise_provider_error(response)
                 result = response_parser(response)
             else:
                 result = response
         except ModelAPIError as exc:
-            if response_parser is not None:
+            if response_parser is not None and retry_structure_errors:
                 if exc.error_category == "response_structure":
                     exc.retryable = True
-                if exc.status_code is not None and 400 <= exc.status_code < 500 and exc.status_code not in {408, 425, 429}:
-                    exc.retryable = False
-                # An explicit permanent provider error overrides even HTTP 429/5xx.
-                if exc.provider_error_kind == "permanent":
-                    exc.retryable = False
+            if exc.status_code is not None and 400 <= exc.status_code < 500 and exc.status_code not in {408, 425, 429}:
+                exc.retryable = False
+            # Authentication/billing failures are permanent for every provider,
+            # including embeddings and Anthropic, even with HTTP 429 or 5xx.
+            if exc.provider_error_kind == "permanent":
+                exc.retryable = False
             category = _ERROR_STAT_KEYS.get(exc.error_category, "other_api_errors")
             record(category)
             error_counts[category] = error_counts.get(category, 0) + 1
@@ -492,11 +589,26 @@ def _request_json_with_retries(
     raise AssertionError("unreachable retry loop")
 
 
+def _post_openai(
+    url: str,
+    headers: Mapping[str, str],
+    payload: Mapping[str, Any],
+    timeout_seconds: float,
+) -> Mapping[str, Any]:
+    """Aggregate opt-in SSE into the same envelope as a normal completion."""
+    return _post_json(
+        url, headers, payload, timeout_seconds,
+        response_reader=_read_openai_stream if payload.get("stream") is True else None,
+    )
+
+
 def _post_json(
     url: str,
     headers: Mapping[str, str],
     payload: Mapping[str, Any],
     timeout_seconds: float,
+    *,
+    response_reader: Callable[[Any], Mapping[str, Any]] | None = None,
 ) -> Mapping[str, Any]:
     """使用标准库发送 JSON POST 请求，并统一处理网络与解析错误。"""
     request = Request(
@@ -507,27 +619,41 @@ def _post_json(
     )
     try:
         with urlopen(request, timeout=timeout_seconds) as response:  # noqa: S310
+            if response_reader is not None:
+                return response_reader(response)
             body = response.read().decode("utf-8")
     except HTTPError as exc:
-        detail = exc.read().decode("utf-8", errors="replace")
         retryable = exc.code in {408, 425, 429} or 500 <= exc.code <= 599
         try:
-            error_kind = _provider_error_kind(json.loads(detail))
-        except json.JSONDecodeError:
+            detail_bytes = exc.read()
+        except (OSError, HTTPException):
+            raise ModelAPIError(
+                f"Model API returned HTTP {exc.code} with an unreadable error body",
+                status_code=exc.code, retryable=retryable, error_category="http",
+            ) from None
+        try:
+            error_response = json.loads(detail_bytes)
+            error_kind = _provider_error_kind(error_response)
+            provider_details = _safe_provider_details(error_response)
+        except (json.JSONDecodeError, UnicodeDecodeError):
             error_kind = None
+            provider_details = {}
         raise ModelAPIError(
-            f"Model API returned HTTP {exc.code}: {detail}",
+            f"Model API returned HTTP {exc.code}" + _provider_detail_label(provider_details),
             status_code=exc.code,
             retryable=retryable,
             error_category="http",
             provider_error_kind=error_kind,
-        ) from exc
-    except (URLError, TimeoutError, OSError) as exc:
+            provider_details=provider_details,
+            response_body_sha256=hashlib.sha256(detail_bytes).hexdigest(),
+            response_body_bytes=len(detail_bytes),
+        ) from None
+    except (URLError, TimeoutError, OSError, HTTPException) as exc:
         raise ModelAPIError(
-            f"Model API request failed: {exc}",
+            f"Model API request failed ({type(exc).__name__})",
             retryable=True,
             error_category="transport",
-        ) from exc
+        ) from None
     except UnicodeDecodeError as exc:
         raise ModelAPIError(
             "Model API returned invalid UTF-8", error_category="response_structure",
@@ -545,12 +671,132 @@ def _post_json(
     return dict(decoded)
 
 
-def _provider_error_kind(response: Any) -> str | None:
-    """Classify explicit error envelopes without retaining or replaying their text.
+def _stream_structure_error() -> ModelAPIError:
+    return ModelAPIError(
+        "Invalid OpenAI-compatible streaming response structure",
+        error_category="response_structure",
+    )
 
-    Unknown explicit errors fail closed. Missing normal response fields alone
-    are handled separately as malformed envelopes, not claimed provider errors.
-    """
+
+def _iter_sse_events(response: Any):
+    """Read SSE incrementally, preserving UTF-8 and CR/LF across read boundaries."""
+    decoder = codecs.getincrementaldecoder("utf-8-sig")()
+    reader = getattr(response, "read1", response.read)
+    pending = ""
+    data: list[str] = []
+    event = "message"
+    first_content = True
+    while True:
+        block = reader(8192)
+        eof = not block
+        pending += decoder.decode(block, final=eof)
+        if first_content and pending.strip():
+            first_content = False
+            # Some compatible services return a JSON error with HTTP 200 even
+            # when streaming was requested. Preserve its permanent/error kind.
+            if pending.lstrip().startswith("{"):
+                body = pending + decoder.decode(response.read(), final=True)
+                try:
+                    decoded = json.loads(body)
+                except json.JSONDecodeError:
+                    raise _stream_structure_error() from None
+                _raise_provider_error(decoded)
+                raise _stream_structure_error()
+        while pending:
+            positions = [pos for pos in (pending.find("\r"), pending.find("\n")) if pos >= 0]
+            if not positions:
+                break
+            end = min(positions)
+            if pending[end] == "\r" and end + 1 == len(pending) and not eof:
+                break
+            step = 2 if pending[end:end + 2] == "\r\n" else 1
+            line, pending = pending[:end], pending[end + step:]
+            if not line:
+                if data:
+                    yield event, "\n".join(data)
+                data = []
+                event = "message"
+            elif not line.startswith(":"):
+                name, _, value = line.partition(":")
+                if value.startswith(" "):
+                    value = value[1:]
+                if name == "data":
+                    data.append(value)
+                elif name == "event":
+                    event = value or "message"
+        if eof:
+            # SSE only dispatches complete events; EOF cannot finalize an answer.
+            return
+
+
+def _read_openai_stream(response: Any) -> Mapping[str, Any]:
+    """Require a valid first-choice finish and DONE before returning any text."""
+    parts: list[str] = []
+    finish: str | None = None
+    saw_first_choice = False
+    for event, data in _iter_sse_events(response):
+        if event == "error":
+            try:
+                error = json.loads(data)
+            except json.JSONDecodeError:
+                error = {"message": data}
+            if not isinstance(error, Mapping):
+                error = {"message": data}
+            if _provider_error_fields(error) is None:
+                error = {"error": error}
+            _raise_provider_error(error)
+            raise _stream_structure_error()
+        if event != "message":
+            raise _stream_structure_error()
+        if data.strip() == "[DONE]":
+            if not saw_first_choice or finish is None:
+                raise _stream_structure_error()
+            return {"choices": [{"message": {"content": "".join(parts)}, "finish_reason": finish}]}
+        try:
+            chunk = json.loads(data)
+        except json.JSONDecodeError:
+            raise _stream_structure_error() from None
+        _raise_provider_error(chunk)
+        if not isinstance(chunk, Mapping):
+            raise _stream_structure_error()
+        usage = chunk.get("usage")
+        if usage is not None and not isinstance(usage, Mapping):
+            raise _stream_structure_error()
+        choices = chunk.get("choices", [])
+        if not isinstance(choices, list):
+            raise _stream_structure_error()
+        if not choices:
+            if not isinstance(usage, Mapping):
+                raise _stream_structure_error()
+            continue
+        indexes: set[int] = set()
+        for choice in choices:
+            if not isinstance(choice, Mapping):
+                raise _stream_structure_error()
+            index = choice.get("index")
+            delta = choice.get("delta")
+            reason = choice.get("finish_reason")
+            if (type(index) is not int or index < 0 or index in indexes
+                    or not isinstance(delta, Mapping)
+                    or (reason is not None and (not isinstance(reason, str) or reason not in {
+                        "stop", "length", "content_filter", "tool_calls", "function_call",
+                    }))):
+                raise _stream_structure_error()
+            indexes.add(index)
+            if any(delta.get(key) is not None and not isinstance(delta[key], str)
+                   for key in ("content", "reasoning_content")):
+                raise _stream_structure_error()
+            if index == 0:
+                if finish is not None:
+                    raise _stream_structure_error()
+                saw_first_choice = True
+                parts.append(delta.get("content") or "")
+                finish = reason
+    raise _stream_structure_error()
+
+
+def _provider_error_fields(response: Any) -> Mapping[str, Any] | None:
+    """Locate an explicit provider error without interpreting normal output."""
     if not isinstance(response, Mapping):
         return None
     error = response.get("error")
@@ -558,9 +804,77 @@ def _provider_error_kind(response: Any) -> str | None:
         code = response.get("code", response.get("status", response.get("status_code")))
         if code not in (None, 0, 200, "0", "200", "success") or response.get("success") is False:
             error = response
-    if error is None:
+    return None if error is None else error if isinstance(error, Mapping) else {"message": str(error)}
+
+
+_SAFE_PROVIDER_IDENTIFIERS = frozenset("""
+400 401 402 403 404 408 425 429 500 501 502 503 504 524
+invalid_api_key authentication_error unauthorized permission_error permission_denied forbidden
+insufficient_quota quota_exceeded billing_hard_limit_reached billing_not_active
+insufficient_balance balance_not_enough payment_required invalid_request_error
+context_length_exceeded prompt_tokens_too_large model_not_found not_found_error unsupported_model
+rate_limit_exceeded rate_limit_error too_many_requests server_error internal_server_error
+internal_error service_unavailable overloaded_error api_error timeout request_timeout capacity_exceeded
+""".split())
+
+
+def _safe_provider_details(response: Any) -> dict[str, Any]:
+    """Keep known codes and a canonical message summary, never arbitrary echoes.
+
+    A gateway may place a credential in any field, including code/type/message.
+    Unknown identifiers and raw messages therefore retain only a fingerprint.
+    """
+    fields = _provider_error_fields(response)
+    if fields is None:
+        return {}
+    result: dict[str, Any] = {}
+    for key in ("code", "type", "status", "status_code"):
+        value = fields.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        normalized = text.lower()
+        if normalized in _SAFE_PROVIDER_IDENTIFIERS:
+            result[key] = normalized
+        else:
+            result[key] = "unrecognized"
+            result[key + "_sha256"] = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    message = fields.get("message")
+    if message is not None:
+        text = str(message)
+        result["message_sha256"] = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        result["message_characters"] = len(text)
+        lower = text.lower()
+        summaries = (
+            (("insufficient quota", "insufficient_quota", "quota exceeded", "额度不足"), "quota unavailable"),
+            (("insufficient balance", "insufficient credit", "billing", "余额不足", "欠费"), "billing or balance rejection"),
+            (("invalid api key", "invalid_api_key", "authentication failed", "unauthorized"), "authentication rejection"),
+            (("permission denied", "forbidden"), "permission rejection"),
+            (("model not found", "model does not exist"), "model unavailable"),
+            (("context length", "context_length", "prompt tokens"), "context limit rejection"),
+            (("rate limit", "too many requests"), "rate limited"),
+            (("timed out", "timeout"), "provider timeout"),
+            (("overload", "service unavailable"), "provider unavailable"),
+        )
+        result["message"] = next((summary for fragments, summary in summaries
+                                  if any(fragment in lower for fragment in fragments)), "provider message redacted")
+    return result
+
+
+def _provider_detail_label(details: Mapping[str, Any]) -> str:
+    identifiers = [f"{key}={details[key]}" for key in ("code", "type", "status", "status_code") if key in details]
+    return " (" + ", ".join(identifiers) + ")" if identifiers else ""
+
+
+def _provider_error_kind(response: Any) -> str | None:
+    """Classify explicit error envelopes without retaining or replaying their text.
+
+    Unknown explicit errors fail closed. Missing normal response fields alone
+    are handled separately as malformed envelopes, not claimed provider errors.
+    """
+    fields = _provider_error_fields(response)
+    if fields is None:
         return None
-    fields = error if isinstance(error, Mapping) else {"message": str(error)}
     identifiers = {str(fields.get(key, "")).strip().lower() for key in ("code", "type", "status", "status_code")}
     permanent = {
         "400", "401", "402", "403", "404", "invalid_api_key", "authentication_error",
@@ -593,9 +907,11 @@ def _provider_error_kind(response: Any) -> str | None:
 def _raise_provider_error(response: Any) -> None:
     kind = _provider_error_kind(response)
     if kind is not None:
+        details = _safe_provider_details(response)
         raise ModelAPIError(
-            f"Model API returned an explicit provider error (classification={kind})",
+            f"Model API returned an explicit provider error (classification={kind})" + _provider_detail_label(details),
             retryable=kind == "transient", error_category="provider", provider_error_kind=kind,
+            provider_details=details,
         )
 
 
@@ -628,6 +944,11 @@ def _extract_openai_text(response: Mapping[str, Any]) -> str:
             len(reasoning_content) if isinstance(reasoning_content, str) else 0
         )
         finish_reason = choice.get("finish_reason") if isinstance(choice, Mapping) else None
+        if finish_reason is not None and (
+            not isinstance(finish_reason, str)
+            or finish_reason not in {"stop", "length", "tool_calls", "function_call", "content_filter"}
+        ):
+            finish_reason = "unrecognized"
         raise ModelAPIError(
             "OpenAI-compatible response contains no final text "
             f"(finish_reason={finish_reason!r}, "

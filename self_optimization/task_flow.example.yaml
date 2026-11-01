@@ -6,7 +6,18 @@ group_path: ../data/groups/hotpotqa-train-001/group.json
 shuffle_seed: 42
 
 workflow:
-  # All QA contribute to metrics; only bounded traces go to Policy.
+  # QA share one Task plan and Skill revision; only admission runs in parallel.
+  # Older configs omitting this block retain serial behavior.
+  qa_execution:
+    mode: adaptive
+    min_workers: 1
+    initial_workers: 2
+    max_workers: 8
+    adjustment_window: 4
+    throughput_tolerance: 0.05
+    latency_factor: 2.0
+  # All QA contribute metrics. Traces are evenly sampled across the Task;
+  # the character budget may reduce complete trace entries, with counts recorded.
   max_process_examples: 5
   # When verify_revision_execution is enabled, replay participating QA to check
   # execution and interface contracts only. This is not a performance sample;
