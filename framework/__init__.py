@@ -3,7 +3,6 @@
 from .config import (
     APIServiceConfig,
     ConfigError,
-    DemoConfig,
     FrameworkConfig,
     VectorIndexConfig,
     create_clients_from_config,
@@ -23,7 +22,8 @@ from .compiler import (
 )
 from .data_groups import DataGroup, GroupDataError, GroupQA, GroupTask, load_group
 from .interfaces import ComponentContext, ComponentInvoker, RAGRequest, build_rag_request
-from .demo import DemoError, run_demo
+from .evidence import EvidencePack, prepare_evidence
+from .reranking import local_model_inference_lock
 from .evaluation import (
     EvaluationError,
     EvaluationExample,
@@ -101,8 +101,6 @@ __all__ = [
     "ComponentStageResult",
     "ConfigError",
     "DataGroup",
-    "DemoConfig",
-    "DemoError",
     "AnthropicModelClient",
     "ComponentContext",
     "ComponentInvoker",
@@ -111,6 +109,7 @@ __all__ = [
     "EvaluationExample",
     "EvaluationSummary",
     "ExecutionError",
+    "EvidencePack",
     "ExampleMetrics",
     "GenerationEvaluator",
     "GenerationMetricError",
@@ -165,12 +164,13 @@ __all__ = [
     "compile_rag_command",
     "create_model_client",
     "load_runtime_callable",
+    "prepare_evidence",
+    "local_model_inference_lock",
     "load_framework_config",
     "load_group",
     "load_spec",
     "run_manage_stage",
     "run_compiled_rag",
-    "run_demo",
     "run_rag",
     "run_rag_from_config",
     "select_agentic_skill",

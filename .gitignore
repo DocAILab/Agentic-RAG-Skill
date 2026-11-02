@@ -31,4 +31,5 @@ runs/
 /self_optimization/build_task_data.py
 /self_optimization/split_task_data.py
 
-# data/groups contains final, versioned Group packages; do not ignore it.
+# Group data are temporarily ignored while complete packages are uploaded in batches.
+/data/groups/

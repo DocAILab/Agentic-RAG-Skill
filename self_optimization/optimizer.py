@@ -1,4 +1,4 @@
-"""将单次 RAG 评估反馈交给 Policy Model，并解析单 Skill 修改提案。"""
+"""将 Task 评估反馈交给 Policy Model，选择并编辑一个参与执行的 Skill。"""
 
 from __future__ import annotations
 
@@ -13,7 +13,8 @@ from typing import Any
 from framework import ModelClient
 
 from .config import OptimizationSettings
-from .contracts import OptimizationProposal, SkillEdit
+from .contracts import (MAX_PATCH_REPLACEMENTS, OptimizationProposal, SkillEdit, TextReplacement,
+                        materialize_patch, patch_base_sha256)
 from .python_validation import (
     PythonStaticValidationError,
     validate_agentic_slot_references,
@@ -23,29 +24,17 @@ from .python_validation import (
 )
 from .workspace import SkillWorkspace
 
-_SELECTION_SYSTEM_PROMPT = """You are the Policy Model selecting one Skill to improve.
-Use the evaluation and retrieval process to choose exactly one participating Skill.
-Match the intended capability to the Skill kind and description. If the weakness is in
-answer generation, select a generator Component, not an Agentic workflow. Return strict
-JSON without Markdown fences or additional prose.
+_SELECTION_SYSTEM_PROMPT = """Select exactly one participating Skill to improve after
+this Task. Diagnose the cause using the Task's metrics and execution traces, then match
+the intended change to the candidate's owned capability. A retrieval failure may call
+for a retriever or rewriter; answer failures with adequate evidence may call for the
+generator; a poor plan may call for Manage or Agentic guidance. Metrics are diagnostic
+evidence, not a rule that forces one target. Do not select by route complexity alone.
 
-Diagnose the weakest owned stage before selecting: healthy retrieval with weak answer
-metrics points to the generator; weak retrieval points to the responsible retriever;
-an incorrect execution route points to the Manage or Agentic Skill. Do not copy a
-selection object from the retrieval process because it describes execution, not the
-single Skill that should be improved.
-
-Base the choice on the measured failure, not merely on the route's complexity. For
-example, strong Hit/MRR with zero or weak R1/RL/METEOR means retrieval succeeded but
-answer generation failed, so select the participating generator Component. Select a
-Manage Skill only when its routing guidance caused the wrong Agentic Skill to run.
-
-The Executor Model's parameters are frozen, but that does not make Generator or other
-Skill files frozen. Every Skill in the candidate catalog may be selected, and its listed
-editable_paths may be modified in the isolated working copy. Never redirect an edit to
-the wrong capability merely because a Component calls the frozen Executor Model.
-
-Schema:
+Every candidate's editable files may change in the isolated working copy. The Executor
+Model's parameters remain frozen, including when editing a generator that calls it.
+Execution plans in the feedback are input evidence, not the output selection schema.
+Return strict JSON without Markdown fences or additional prose, matching this schema:
 {"selected_skill":"exact-candidate-name","rationale":"short reason grounded in the feedback"}
 """
 
@@ -53,15 +42,16 @@ _EDIT_SYSTEM_PROMPT = """You are editing one already-selected Skill in an isolat
 Only that Skill is visible. Improve it using the evaluation, retrieval process, and
 selection rationale.
 
-The Executor Model's parameters stay frozen. The selected Skill's files marked
-editable=true are still editable, including a Generator Component that calls the
+The Executor Model's parameters stay frozen. The selected Skill's files listed in
+EXACT EDITABLE PATHS are still editable, including a Generator Component that calls the
 Executor. Change Skill instructions or implementation, never model parameters.
 
 Rules:
-1. Return one to three complete text-file replacements for the selected Skill only.
-2. Edit only files marked editable=true. Never edit ragskill.yaml, package names,
+1. Return complete text-file replacements for the selected Skill only, within the
+   MAXIMUM FILE REPLACEMENTS specified in the input.
+2. Existing files must be listed in EXACT EDITABLE PATHS. Never edit ragskill.yaml, package names,
    runtime IDs, capability contracts, slot contracts, or Python entry signatures.
-3. Never edit a file marked truncated=true because its complete content is unavailable.
+3. Follow the NEW FILE POLICY in the input. Existing files must have complete originals.
 4. Preserve YAML frontmatter in SKILL.md with exactly name and description.
 5. Make a focused, evidence-based change. Do not merely describe a change.
 6. Return strict JSON without Markdown fences or additional prose.
@@ -79,14 +69,56 @@ Rules:
 12. Preserve existing validation, grounding, normalization, and output-contract
     behavior. Make a focused change; never replace a mature implementation with a
     substantially smaller rewrite merely to simplify it.
+13. Input metadata is context, not output. Each object in edits must contain exactly
+    path and content. Never include editable, truncated, rationale, or any other key
+    in an edit object. Return only the schema below.
 
 Schema:
 {"edits":[{"path":"SKILL.md or scripts/file.py","content":"complete replacement content"}]}
 """
 
 
+_PATCH_EDIT_SYSTEM_PROMPT = """You are editing one already-selected Skill in an isolated copy.
+Only that Skill is visible. Improve it using the evaluation, retrieval process, and
+selection rationale. Return small exact-text patches, never complete file contents.
+
+The Executor Model's parameters stay frozen. Edit the selected Skill's instructions
+or implementation, never model parameters. Follow these rules:
+1. Use only EXACT EDITABLE PATHS and the supplied BASE SHA256 FOR EDITABLE FILES.
+   Copy each file's base_sha256 exactly. Do not create files or edit protected files.
+2. Each old string must be non-empty and match exactly once in that file's ORIGINAL
+   FILE CONTENTS. Use enough surrounding text to make the match unique. Each new
+   value is a string; an empty string deletes that original span.
+3. All replacements refer to the same original file, not to earlier replacements.
+   Original spans must not overlap. Use LF newlines and JSON escaping exactly.
+4. Return only changed spans. Do not add content, editable, truncated, rationale,
+   or other input metadata to an edit object. Keep the selected Skill fixed.
+5. Preserve ragskill.yaml, package names, runtime IDs, capability and slot contracts,
+   Python entry signatures, and SKILL.md frontmatter with exactly name/description.
+6. Make a focused substantive behavior or instruction change. Comments/docstrings,
+   unchanged text, TODOs, and descriptions of future work are not improvements.
+7. For a Component, change its scripts/*.py executable behavior. SKILL.md-only
+   changes do not affect automated execution. Preserve existing validation,
+   grounding, normalization, output contracts, and mature implementation behavior.
+8. Follow MAXIMUM FILE PATCHES. Return strict JSON only, without Markdown or prose.
+
+Schema:
+{"edits":[{"path":"exact-editable-path","base_sha256":"copied-64-character-hash",
+"replacements":[{"old":"unique exact original text","new":"replacement text"}]}]}
+"""
+_PATCH_EDIT_SYSTEM_PROMPT += (
+    f"\nEach file may contain at most {MAX_PATCH_REPLACEMENTS} replacements.\n"
+)
+
+
 class OptimizationError(ValueError):
     """表示优化提示超限或 Policy Model 返回了非法提案。"""
+
+
+class OptimizationContextError(OptimizationError):
+    """Configured character limits cannot hold the complete Policy input."""
+
+    failure_category = "policy_context_limit"
 
 
 class OptimizationNoChange(OptimizationError):
@@ -113,11 +145,12 @@ class OptimizationModelCall:
     raw_response: str | None = None
     proposal: OptimizationProposal | None = None
     error: str | None = None
+    edit_mode: str = "full"
 
 
 @dataclass(slots=True)
 class SkillOptimizer:
-    """负责构造有界反馈提示、调用 Qwen 并验证输出结构。"""
+    """构造完整反馈提示、调用 Policy Model 并验证输出结构。"""
 
     model: ModelClient
     settings: OptimizationSettings
@@ -143,6 +176,9 @@ class SkillOptimizer:
         """向优化模型提交一次评估和检索轨迹，并返回唯一 Skill 提案。"""
         self.last_call = None
         self.calls = []
+        edit_mode = self.settings.edit_mode
+        if edit_mode not in {"full", "patch"}:
+            raise OptimizationError("Optimizer edit_mode must be full or patch")
         normalized_candidates = _unique_names(candidate_names)
         evaluation_json = _json_text(evaluation)
         process_json = _bounded_json(
@@ -163,8 +199,10 @@ class SkillOptimizer:
             snapshots=catalog_snapshots,
         )
         if len(selection_prompt) > self.settings.max_prompt_chars:
-            raise OptimizationError(
-                "Optimizer selection prompt exceeds max_prompt_chars"
+            raise OptimizationContextError(
+                "Optimizer selection prompt exceeds max_prompt_chars "
+                f"({len(selection_prompt)} > {self.settings.max_prompt_chars}); "
+                "character limits do not measure model tokens"
             )
         current_selection_prompt = selection_prompt
         selection_error: OptimizationError | None = None
@@ -176,6 +214,7 @@ class SkillOptimizer:
                 stage="selection",
                 system_prompt=_SELECTION_SYSTEM_PROMPT,
                 prompt=current_selection_prompt,
+                edit_mode=edit_mode,
             )
             self.calls.append(selection_call)
             self.last_call = selection_call
@@ -190,11 +229,6 @@ class SkillOptimizer:
                 selected_skill, rationale = _parse_skill_selection(
                     selection_response,
                     candidate_names=normalized_candidates,
-                )
-                _validate_selection_alignment(
-                    selected_skill,
-                    evaluation=evaluation,
-                    snapshots=catalog_snapshots,
                 )
             except OptimizationError as exc:
                 selection_call.error = str(exc)
@@ -216,47 +250,53 @@ class SkillOptimizer:
                 f"{self.settings.max_proposal_attempts} attempts: {selection_error}"
             ) from selection_error
 
-        file_limit = self.settings.max_skill_file_chars
-        edit_prompt = ""
-        selected_snapshot: Mapping[str, Any] | None = None
-        while file_limit >= 1_000:
-            selected_snapshot = workspace.candidate_snapshots(
-                (selected_skill,),
-                max_file_chars=file_limit,
-            )[0]
-            edit_prompt = _build_edit_prompt(
-                evaluation_json=evaluation_json,
-                process_json=process_json,
-                selected_skill=selected_skill,
-                rationale=rationale,
-                snapshot=selected_snapshot,
+        selected_snapshot = workspace.candidate_snapshots(
+            (selected_skill,),
+            max_file_chars=self.settings.max_skill_file_chars,
+        )[0]
+        incomplete_paths = [
+            file.get("path") for file in selected_snapshot.get("files", ())
+            if file.get("truncated")
+        ]
+        if incomplete_paths:
+            raise OptimizationContextError(
+                "Selected Skill exceeds max_skill_file_chars; complete editing input "
+                f"is required for: {_json_text(incomplete_paths)}"
             )
-            if len(edit_prompt) <= self.settings.max_prompt_chars:
-                break
-            file_limit //= 2
-        if (
-            selected_snapshot is None
-            or not edit_prompt
-            or len(edit_prompt) > self.settings.max_prompt_chars
-        ):
-            raise OptimizationError(
-                "Optimizer edit prompt exceeds max_prompt_chars after bounded truncation"
+        edit_prompt = _build_edit_prompt(
+            evaluation_json=evaluation_json,
+            process_json=process_json,
+            selected_skill=selected_skill,
+            rationale=rationale,
+            snapshot=selected_snapshot,
+            max_edits=self.settings.max_edits,
+            allow_new_files=self.settings.allow_new_files,
+            edit_mode=edit_mode,
+        )
+        if len(edit_prompt) > self.settings.max_prompt_chars:
+            raise OptimizationContextError(
+                "Optimizer edit prompt exceeds max_prompt_chars "
+                f"({len(edit_prompt)} > {self.settings.max_prompt_chars}); "
+                "complete Skill files were not truncated"
             )
 
         current_prompt = edit_prompt
         last_error: OptimizationError | None = None
         edit_errors: list[OptimizationError] = []
+        edit_system_prompt = (_PATCH_EDIT_SYSTEM_PROMPT if edit_mode == "patch"
+                              else _EDIT_SYSTEM_PROMPT)
         for attempt_index in range(self.settings.max_proposal_attempts):
             model_call = OptimizationModelCall(
                 stage="editing",
-                system_prompt=_EDIT_SYSTEM_PROMPT,
+                system_prompt=edit_system_prompt,
                 prompt=current_prompt,
+                edit_mode=edit_mode,
             )
             self.calls.append(model_call)
             self.last_call = model_call
             response = self.model.generate(
                 current_prompt,
-                system=_EDIT_SYSTEM_PROMPT,
+                system=edit_system_prompt,
                 temperature=self.settings.temperature,
                 max_tokens=self.settings.max_tokens,
             )
@@ -265,17 +305,20 @@ class SkillOptimizer:
                 edits = _parse_skill_edits(
                     response,
                     max_edits=self.settings.max_edits,
+                    edit_mode=edit_mode, snapshot=selected_snapshot,
+                    max_file_chars=self.settings.max_skill_file_chars,
                 )
                 proposal = OptimizationProposal(
                     selected_skill=selected_skill,
                     rationale=rationale,
                     edits=edits,
+                    edit_mode=edit_mode,
                 )
                 model_call.proposal = proposal
                 _preflight_proposal(
                     proposal,
                     snapshots=(selected_snapshot,),
-                    allow_new_files=self.settings.allow_new_files,
+                    allow_new_files=self.settings.allow_new_files and edit_mode == "full",
                 )
             except OptimizationError as exc:
                 model_call.error = str(exc)
@@ -288,6 +331,7 @@ class SkillOptimizer:
                     error=str(exc),
                     attempt=attempt_index + 1,
                     max_chars=self.settings.max_prompt_chars,
+                    edit_mode=edit_mode,
                 )
                 continue
             return proposal
@@ -304,57 +348,6 @@ class SkillOptimizer:
             f"{len(edit_errors)} edit attempts: "
             f"{last_error}"
         ) from last_error
-
-
-def parse_optimization_proposal(
-    response: str,
-    *,
-    candidate_names: Sequence[str],
-    max_edits: int,
-) -> OptimizationProposal:
-    """解析并严格校验优化模型返回的 JSON 提案。"""
-    if not isinstance(response, str) or not response.strip():
-        raise OptimizationError("Optimizer response is empty")
-    payload = _parse_json_object(response)
-    required_fields = {"selected_skill", "rationale", "edits"}
-    if set(payload) != required_fields:
-        raise OptimizationError(
-            "Optimizer response must contain exactly selected_skill, rationale, and edits"
-        )
-    selected_skill = _required_text(payload, "selected_skill")
-    allowed = set(_unique_names(candidate_names))
-    if selected_skill not in allowed:
-        raise OptimizationError(
-            f"Optimizer selected a Skill outside this execution: {selected_skill}"
-        )
-    rationale = _required_text(payload, "rationale")
-    edits_value = payload.get("edits")
-    if isinstance(edits_value, (str, bytes, bytearray)) or not isinstance(
-        edits_value,
-        Sequence,
-    ):
-        raise OptimizationError("Optimizer edits must be a list")
-    if not edits_value or len(edits_value) > max_edits:
-        raise OptimizationError(
-            f"Optimizer edits must contain between 1 and {max_edits} items"
-        )
-    edits = []
-    for index, value in enumerate(edits_value):
-        if not isinstance(value, Mapping) or set(value) != {"path", "content"}:
-            raise OptimizationError(
-                f"Optimizer edits[{index}] must contain exactly path and content"
-            )
-        edits.append(
-            SkillEdit(
-                path=_required_text(value, "path"),
-                content=_required_text(value, "content", strip=False),
-            )
-        )
-    return OptimizationProposal(
-        selected_skill=selected_skill,
-        rationale=rationale,
-        edits=tuple(edits),
-    )
 
 
 def _build_selection_prompt(
@@ -393,8 +386,8 @@ def _build_selection_prompt(
         '{"selected_skill":"exact-candidate-name","rationale":"short reason grounded '
         'in the feedback"}\n'
         "Do not return skill_name, skill_selection, agentic_skill, "
-        "component_bindings, Markdown, or additional prose. Base selected_skill on "
-        "the weakest measured stage, not on route complexity alone."
+        "component_bindings, Markdown, or additional prose. Ground the selected "
+        "capability in the Task metrics and traces."
     )
 
 
@@ -405,13 +398,35 @@ def _build_edit_prompt(
     selected_skill: str,
     rationale: str,
     snapshot: Mapping[str, Any],
+    max_edits: int,
+    allow_new_files: bool,
+    edit_mode: str = "full",
 ) -> str:
     """只向第二阶段暴露已选 Skill 的完整快照和精确可编辑路径。"""
+    if edit_mode == "patch":
+        return _build_patch_edit_prompt(
+            evaluation_json=evaluation_json, process_json=process_json,
+            selected_skill=selected_skill, rationale=rationale,
+            snapshot=snapshot, max_edits=max_edits,
+        )
+    if edit_mode != "full":
+        raise OptimizationError("Optimizer edit_mode must be full or patch")
+    files = snapshot.get("files", ())
     editable_paths = [
         file.get("path")
-        for file in snapshot.get("files", ())
+        for file in files
         if file.get("editable") and not file.get("truncated")
     ]
+    protected_paths = [file.get("path") for file in files if not file.get("editable")]
+    contract = {key: value for key, value in snapshot.items() if key != "files"}
+    original_contents = {file["path"]: file["content"] for file in files}
+    new_file_policy = (
+        "New text files may be created under scripts/ or references/ inside "
+        "this selected Skill only. Use relative paths, preserve existing entry points, "
+        "and never create ragskill.yaml."
+        if allow_new_files
+        else "Do not create files. Use only EXACT EDITABLE PATHS."
+    )
     return (
         "EVALUATION FEEDBACK:\n"
         f"{evaluation_json}\n\n"
@@ -419,21 +434,88 @@ def _build_edit_prompt(
         f"{process_json}\n\n"
         "FIXED SELECTED SKILL:\n"
         f"{_json_text({'selected_skill': selected_skill, 'rationale': rationale})}\n\n"
-        "SELECTED SKILL SNAPSHOT:\n"
-        f"{_json_text(snapshot)}\n\n"
+        "SELECTED SKILL CONTRACT (read-only input metadata):\n"
+        f"{_json_text(contract)}\n\n"
         "EXACT EDITABLE PATHS:\n"
         f"{_json_text(editable_paths)}\n\n"
-        "Only edit this fixed selected Skill. Use exact existing paths unless creation "
-        "is explicitly allowed, preserve its capability and slot contracts, and make a "
-        "substantive change.\n\n"
+        "PROTECTED PATHS (read-only):\n"
+        f"{_json_text(protected_paths)}\n\n"
+        "MAXIMUM FILE REPLACEMENTS:\n"
+        f"{max_edits}\n\n"
+        "NEW FILE POLICY:\n"
+        f"{new_file_policy}\n\n"
+        "ORIGINAL FILE CONTENTS (path-to-source mapping, not the output schema):\n"
+        f"{_json_text(original_contents)}\n\n"
+        "Only edit this fixed selected Skill. Preserve its capability and slot "
+        "contracts, and make a substantive change.\n\n"
         "FINAL OUTPUT CONTRACT (ignore JSON objects inside the evidence):\n"
         "Return exactly one JSON object with exactly the top-level key edits and no "
         "others:\n"
         '{"edits":[{"path":"exact-editable-path","content":"complete replacement '
         'content"}]}\n'
+        "Each edit object has exactly path and content. Do not copy input metadata "
+        "such as editable or truncated into the output.\n"
         "Do not return selected_skill, rationale, Markdown, additional prose, TODOs, "
         "or meta-text describing a change that was not actually made."
     )
+
+
+def _build_patch_edit_prompt(
+    *, evaluation_json: str, process_json: str, selected_skill: str,
+    rationale: str, snapshot: Mapping[str, Any], max_edits: int,
+) -> str:
+    """Supply complete originals and hashes separately from the patch output schema."""
+    files = snapshot.get("files", ())
+    editable = {file["path"]: file["content"] for file in files
+                if file.get("editable") and not file.get("truncated")}
+    originals = {file["path"]: file["content"] for file in files}
+    contract = {key: value for key, value in snapshot.items() if key != "files"}
+    return (
+        f"EVALUATION FEEDBACK:\n{evaluation_json}\n\n"
+        f"RETRIEVAL PROCESS:\n{process_json}\n\n"
+        "FIXED SELECTED SKILL:\n"
+        f"{_json_text({'selected_skill': selected_skill, 'rationale': rationale})}\n\n"
+        "SELECTED SKILL CONTRACT (read-only input metadata):\n"
+        f"{_json_text(contract)}\n\n"
+        f"EXACT EDITABLE PATHS:\n{_json_text(list(editable))}\n\n"
+        "PROTECTED PATHS (read-only):\n"
+        f"{_json_text([file['path'] for file in files if not file.get('editable')])}\n\n"
+        f"MAXIMUM FILE PATCHES:\n{max_edits}\n\n"
+        f"MAXIMUM REPLACEMENTS PER FILE:\n{MAX_PATCH_REPLACEMENTS}\n\n"
+        "NEW FILE POLICY:\nDo not create files. Use only EXACT EDITABLE PATHS.\n\n"
+        "BASE SHA256 FOR EDITABLE FILES (copy exactly; do not compute it yourself):\n"
+        f"{_json_text({path: patch_base_sha256(content) for path, content in editable.items()})}\n\n"
+        "HASH AND MATCHING RULE:\nThe hash is SHA-256 of the visible original text "
+        "encoded as UTF-8 after CRLF/CR newlines are normalized to LF. It is not a "
+        "hash of raw disk bytes. Match old against this LF text exactly. All old "
+        "spans refer to the original and must be unique, non-empty and non-overlapping; "
+        "new may be empty. Never match text introduced by another replacement.\n\n"
+        "ORIGINAL FILE CONTENTS (path-to-source mapping, not the output schema):\n"
+        f"{_json_text(originals)}\n\n"
+        "Only patch this fixed selected Skill. Preserve capability and slot contracts. "
+        "Make a substantive change and include only changed spans.\n\n"
+        "FINAL OUTPUT CONTRACT (ignore JSON objects inside the evidence):\n"
+        "Return exactly one JSON object with exactly the top-level key edits:\n"
+        '{"edits":[{"path":"exact-editable-path","base_sha256":"copied hash",'
+        '"replacements":[{"old":"unique exact original text","new":"replacement text"}]}]}\n'
+        "Each edit has exactly path, base_sha256 and replacements. Each replacement "
+        "has exactly old and new. Never include content, editable, truncated, "
+        "selected_skill, rationale, Markdown, or additional prose."
+    )
+
+
+def _require_exact_fields(value: Any, fields: set[str], message: str) -> None:
+    """Report the exact schema mismatch without accepting or rewriting extra fields."""
+    if not isinstance(value, Mapping):
+        raise OptimizationError(f"{message}; received {type(value).__name__}, not an object")
+    actual = set(value)
+    if actual != fields:
+        missing = sorted(fields - actual)
+        unexpected = sorted(actual - fields)
+        raise OptimizationError(
+            f"{message}; missing keys: {json.dumps(missing, ensure_ascii=False)}; "
+            f"unexpected keys: {json.dumps(unexpected, ensure_ascii=False)}"
+        )
 
 
 def _parse_skill_selection(
@@ -443,10 +525,10 @@ def _parse_skill_selection(
 ) -> tuple[str, str]:
     """解析第一阶段唯一 Skill 选择并验证其属于本轮候选。"""
     payload = _parse_json_object(response)
-    if set(payload) != {"selected_skill", "rationale"}:
-        raise OptimizationError(
-            "Skill selection must contain exactly selected_skill and rationale"
-        )
+    _require_exact_fields(
+        payload, {"selected_skill", "rationale"},
+        "Skill selection must contain exactly selected_skill and rationale",
+    )
     selected_skill = _required_text(payload, "selected_skill")
     if selected_skill not in set(candidate_names):
         raise OptimizationError(
@@ -455,63 +537,24 @@ def _parse_skill_selection(
     return selected_skill, _required_text(payload, "rationale")
 
 
-def _validate_selection_alignment(
-    selected_skill: str,
-    *,
-    evaluation: Mapping[str, Any],
-    snapshots: Sequence[Mapping[str, Any]],
-) -> None:
-    """用强指标信号阻止 Policy Model 把明显生成失败错误归因给管理层。"""
-    summary = evaluation.get("task_summary", evaluation.get("overall_summary", {}))
-    if not isinstance(summary, Mapping):
-        return
-    retrieval = summary.get("retrieval", {})
-    generation = summary.get("generation", {})
-    if not isinstance(retrieval, Mapping) or not isinstance(generation, Mapping):
-        return
-    strong_retrieval = (
-        _numeric_metric(retrieval, "Hit@10") >= 0.8
-        and _numeric_metric(retrieval, "MRR") >= 0.5
-    )
-    weak_generation = max(
-        _numeric_metric(generation, "R1"),
-        _numeric_metric(generation, "RL"),
-        _numeric_metric(generation, "METEOR"),
-    ) <= 0.1
-    if not strong_retrieval or not weak_generation:
-        return
-    generator_candidates = {
-        str(snapshot.get("name"))
-        for snapshot in snapshots
-        if snapshot.get("kind") == "component"
-        and any(
-            isinstance(capability, Mapping)
-            and capability.get("name") == "generator"
-            for capability in snapshot.get("provided_capabilities", ())
-        )
-    }
-    if generator_candidates and selected_skill not in generator_candidates:
-        raise OptimizationError(
-            "Selection contradicts measured stage ownership: retrieval Hit@10/MRR "
-            "are strong while R1/RL/METEOR are weak, so select the participating "
-            f"generator Component from {sorted(generator_candidates)}"
-        )
-
-
-def _numeric_metric(metrics: Mapping[str, Any], key: str) -> float:
-    value = metrics.get(key, 0.0)
-    return float(value) if isinstance(value, (int, float)) else 0.0
-
-
 def _parse_skill_edits(
     response: str,
     *,
     max_edits: int,
+    edit_mode: str = "full",
+    snapshot: Mapping[str, Any] | None = None,
+    max_file_chars: int | None = None,
 ) -> tuple[SkillEdit, ...]:
     """解析第二阶段只包含完整文件替换的严格 JSON。"""
+    if edit_mode == "patch":
+        return _parse_patch_edits(
+            response, max_edits=max_edits, snapshot=snapshot,
+            max_file_chars=max_file_chars,
+        )
+    if edit_mode != "full":
+        raise OptimizationError("Optimizer edit_mode must be full or patch")
     payload = _parse_json_object(response)
-    if set(payload) != {"edits"}:
-        raise OptimizationError("Skill edit response must contain exactly edits")
+    _require_exact_fields(payload, {"edits"}, "Skill edit response must contain exactly edits")
     edits_value = payload.get("edits")
     if isinstance(edits_value, (str, bytes, bytearray)) or not isinstance(
         edits_value,
@@ -524,16 +567,79 @@ def _parse_skill_edits(
         )
     edits = []
     for index, value in enumerate(edits_value):
-        if not isinstance(value, Mapping) or set(value) != {"path", "content"}:
-            raise OptimizationError(
-                f"Optimizer edits[{index}] must contain exactly path and content"
-            )
+        _require_exact_fields(
+            value, {"path", "content"},
+            f"Optimizer edits[{index}] must contain exactly path and content",
+        )
         edits.append(
             SkillEdit(
                 path=_required_text(value, "path"),
                 content=_required_text(value, "content", strip=False),
             )
         )
+    return tuple(edits)
+
+
+def _parse_patch_edits(
+    response: str, *, max_edits: int, snapshot: Mapping[str, Any] | None,
+    max_file_chars: int | None,
+) -> tuple[SkillEdit, ...]:
+    """Strictly parse patches and materialize against the exact visible snapshot."""
+    def unique_object(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise OptimizationError(f"Patch response contains duplicate JSON key: {key}")
+            result[key] = value
+        return result
+
+    try:
+        payload = json.loads(response, object_pairs_hook=unique_object)
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise OptimizationError("Patch response must be strict JSON without Markdown or prose") from exc
+    _require_exact_fields(payload, {"edits"}, "Patch response must contain exactly edits")
+    values = payload["edits"]
+    if not isinstance(values, list) or not 1 <= len(values) <= max_edits:
+        raise OptimizationError(f"Patch edits must contain between 1 and {max_edits} items")
+    if not isinstance(snapshot, Mapping):
+        raise OptimizationError("Patch editing requires the selected Skill's complete snapshot")
+    files = {file["path"]: file for file in snapshot.get("files", ())}
+    edits, paths = [], set()
+    for index, value in enumerate(values):
+        _require_exact_fields(
+            value, {"path", "base_sha256", "replacements"},
+            f"Optimizer patch edits[{index}] must contain exactly path, base_sha256 and replacements",
+        )
+        path = _required_text(value, "path", strip=False)
+        if path in paths:
+            raise OptimizationError("Patch edits contain duplicate file paths")
+        paths.add(path)
+        file = files.get(path)
+        if file is None or not file.get("editable") or file.get("truncated"):
+            raise OptimizationError(f"Patch path '{path}' is not an exact editable existing path in the selected Skill")
+        replacements_value = value["replacements"]
+        if not isinstance(replacements_value, list) or not replacements_value:
+            raise OptimizationError("Patch replacements must contain at least one item")
+        if len(replacements_value) > MAX_PATCH_REPLACEMENTS:
+            raise OptimizationError(f"Patch replacements exceed {MAX_PATCH_REPLACEMENTS} items per file")
+        replacements = []
+        for replacement_index, replacement in enumerate(replacements_value):
+            _require_exact_fields(
+                replacement, {"old", "new"},
+                f"Patch replacements[{replacement_index}] must contain exactly old and new",
+            )
+            replacements.append(TextReplacement(replacement["old"], replacement["new"]))
+        try:
+            content = materialize_patch(
+                file["content"], value["base_sha256"], tuple(replacements),
+            )
+        except ValueError as exc:
+            raise OptimizationError(str(exc)) from exc
+        if not content.strip():
+            raise OptimizationError(f"Patch materialized file '{path}' must not be empty")
+        if max_file_chars is not None and len(content) > max_file_chars:
+            raise OptimizationError(f"Patch materialized file '{path}' exceeds max_skill_file_chars")
+        edits.append(SkillEdit(path, content, value["base_sha256"], tuple(replacements)))
     return tuple(edits)
 
 
@@ -574,28 +680,10 @@ def _preflight_proposal(
             if allow_new_files:
                 substantive_change = True
                 continue
-            alternative_owners = sorted(
-                str(snapshot.get("name"))
-                for snapshot in snapshots
-                if snapshot.get("name") != proposal.selected_skill
-                and any(
-                    isinstance(file, Mapping)
-                    and file.get("path") == edit.path
-                    and file.get("editable")
-                    and not file.get("truncated")
-                    for file in snapshot.get("files", ())
-                )
-            )
-            alternative_text = (
-                f" Other candidate Skills owning this path: {alternative_owners}."
-                if alternative_owners
-                else ""
-            )
             raise OptimizationError(
                 f"'{edit.path}' does not exist in selected Skill "
                 f"'{proposal.selected_skill}'. Exact editable paths: {valid_paths}."
-                f"{alternative_text} Select the Skill that owns the code you intend "
-                "to change; do not copy Component code into an Agentic Skill."
+                " Do not copy code from another Skill or change the fixed selected Skill."
             )
         if not current.get("editable"):
             raise OptimizationError(
@@ -648,8 +736,8 @@ def _preflight_proposal(
         raise OptimizationError(
             f"Proposal for '{proposal.selected_skill}' does not make a substantive "
             "change. Do not resend the current file or alter only comments/docstrings; "
-            "change executable behavior, update SKILL.md instructions, or choose a "
-            "different candidate Skill consistent with the rationale."
+            "change this selected Skill's executable behavior or concrete SKILL.md "
+            "instructions, consistent with the rationale."
         )
     if selected.get("kind") == "component" and not component_runtime_change:
         raise OptimizationError(
@@ -665,19 +753,40 @@ def _repair_prompt(
     error: str,
     attempt: int,
     max_chars: int,
+    edit_mode: str = "full",
 ) -> str:
     """累积每次预检错误，阻止模型在多个已知错误之间来回摆动。"""
+    if edit_mode == "patch":
+        repair = (
+            f"\n\nPROPOSAL ATTEMPT {attempt} REJECTED BEFORE APPLICATION:\n{error}\n"
+            "Correct this and all earlier rejection reasons. Keep the selected Skill "
+            "and patch mode fixed. Refer to the unchanged ORIGINAL FILE CONTENTS and "
+            "copy its supplied base_sha256. Every old must have exactly one original "
+            "match; include more original surrounding text for ambiguity. All spans "
+            "must be non-overlapping and every edit substantive. Return exactly "
+            '{"edits":[{"path":"exact-editable-path","base_sha256":"copied hash",'
+            '"replacements":[{"old":"unique exact original text","new":"replacement text"}]}]}. '
+            "Each edit has only path, base_sha256 and replacements; each replacement "
+            "has only old and new. Remove unexpected keys such as content, editable or "
+            f"truncated. Use at most {MAX_PATCH_REPLACEMENTS} replacements per file. "
+            "Do not return a full file or switch to full mode."
+        )
+        return _append_complete_repair(current_prompt, repair, max_chars=max_chars)
+    if edit_mode != "full":
+        raise OptimizationError("Optimizer edit_mode must be full or patch")
     repair = (
         f"\n\nPROPOSAL ATTEMPT {attempt} REJECTED BEFORE APPLICATION:\n"
         f"{error}\n"
-        "Do not repeat this proposal or any earlier rejected proposal. Return corrected "
-        "strict JSON, use an exact editable path, and make a substantive change. Every "
-        "returned file must differ from the visible snapshot; omit unchanged files."
+        "Correct the reported violation and all earlier rejection reasons. If the "
+        "error lists unexpected keys, remove those keys; preserve valid replacement "
+        "content rather than changing behavior merely to repair JSON structure. "
+        "Every replacement must make a substantive change to the original; omit "
+        "unchanged files and keep the selected Skill fixed. "
+        'Return exactly {"edits":[{"path":"exact-editable-path","content":"complete '
+        'replacement content"}]}. Each edit has only path and content; never include '
+        "editable, truncated, or other input metadata."
     )
-    available = max_chars - len(current_prompt)
-    if available <= 0:
-        return current_prompt
-    return current_prompt + repair[:available]
+    return _append_complete_repair(current_prompt, repair, max_chars=max_chars)
 
 
 def _repair_selection_prompt(
@@ -693,8 +802,17 @@ def _repair_selection_prompt(
         "Re-evaluate stage ownership from the metrics and return a corrected object "
         "matching the final output contract."
     )
-    available = max_chars - len(base_prompt)
-    return base_prompt if available <= 0 else base_prompt + repair[:available]
+    return _append_complete_repair(base_prompt, repair, max_chars=max_chars)
+
+
+def _append_complete_repair(prompt: str, repair: str, *, max_chars: int) -> str:
+    required = len(prompt) + len(repair)
+    if required > max_chars:
+        raise OptimizationContextError(
+            "Optimizer repair prompt exceeds max_prompt_chars "
+            f"({required} > {max_chars}); prompt and rejection feedback were not truncated"
+        )
+    return prompt + repair
 
 
 def _is_no_change_error(error: OptimizationError) -> bool:
@@ -809,16 +927,14 @@ def _remove_docstrings(node: ast.AST) -> None:
 
 
 def _bounded_json(payload: Mapping[str, Any], max_chars: int) -> str:
-    """将检索过程编码为 JSON，超限时保留前缀并显式标记截断。"""
+    """Encode the complete sampled process; refuse a lossy JSON-prefix fallback."""
     encoded = _json_text(payload)
     if len(encoded) <= max_chars:
         return encoded
-    return _json_text(
-        {
-            "truncated": True,
-            "original_characters": len(encoded),
-            "json_prefix": encoded[:max_chars],
-        }
+    raise OptimizationContextError(
+        "Optimizer retrieval process exceeds max_process_chars "
+        f"({len(encoded)} > {max_chars}); the complete JSON was not truncated. "
+        "Character limits do not measure model tokens."
     )
 
 

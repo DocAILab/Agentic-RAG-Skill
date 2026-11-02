@@ -2,16 +2,20 @@
 
 import json
 
+from framework.evidence import prepare_evidence
+
+MAX_OUTPUT_ATTEMPTS = 3
+
 
 def run(inputs, context):
     """将问题、证据和答案提交给模型，并返回校验后的批评结果。"""
     query = str(inputs["query"])
     answer = str(inputs["answer"])
-    documents = list(inputs.get("documents", ()))
-    evidence = "\n\n".join(
-        f"[{index}] id={document['id']}\n{document.get('text', '')}"
-        for index, document in enumerate(documents, start=1)
-    )
+    packed = prepare_evidence(inputs.get("evidence_query", query), inputs.get("documents", ()))
+    record = getattr(context, "record_evidence_selection", None)
+    if callable(record):
+        record(packed.metadata)
+    evidence = packed.text
     prompt = (
         "Critique the answer against the question and supplied evidence. "
         "Approve only when it gives a direct answer and every required fact or "
@@ -24,13 +28,33 @@ def run(inputs, context):
         f"Answer: {answer}\n\n"
         f"Evidence:\n{evidence}"
     )
-    response = context.call_model(
-        prompt,
-        temperature=0.0,
-        max_tokens=inputs.get("max_tokens"),
-    )
-    payload = _parse_json(response)
-    return _validate_result(payload)
+    base_prompt = prompt
+    diagnostics = []
+    for attempt in range(MAX_OUTPUT_ATTEMPTS):
+        response = context.call_model(
+            prompt,
+            temperature=0.0,
+            max_tokens=inputs.get("max_tokens"),
+        )
+        try:
+            return _validate_result(_parse_json(response))
+        except ValueError as exc:
+            diagnostics.append(str(exc))
+            if attempt + 1 >= MAX_OUTPUT_ATTEMPTS:
+                raise ValueError(
+                    f"Critic output contract failed after {MAX_OUTPUT_ATTEMPTS} attempts: "
+                    + "; ".join(dict.fromkeys(diagnostics))
+                ) from exc
+            prompt = (
+                f"{base_prompt}\n\n"
+                "OUTPUT CONTRACT CORRECTION:\n"
+                f"Validation error: {exc}\n"
+                "Return only one JSON object with exactly approved, score, feedback, issues. "
+                "approved must be a JSON boolean, score a number from 0 to 1, "
+                "feedback a string, and issues an array of strings (use [] when empty). "
+                "Keep the original evidence and approval requirements unchanged."
+            )
+    raise ValueError("Critic output contract validation failed")  # pragma: no cover
 
 
 def _parse_json(response):

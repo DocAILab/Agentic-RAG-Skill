@@ -41,6 +41,7 @@ def write_optimization_audit(
             {
                 "attempt": index,
                 "stage": model_call.stage,
+                "edit_mode": getattr(model_call, "edit_mode", None),
                 "error": model_call.error,
                 "artifacts": attempt_artifacts,
             }
@@ -85,7 +86,7 @@ def compact_optimization_result(result: Mapping[str, Any]) -> dict[str, Any]:
     compact: dict[str, Any] = {
         "status": result.get("status"),
     }
-    for key in ("selected_skill", "rationale", "reason", "error_type", "error"):
+    for key in ("selected_skill", "rationale", "reason", "error_type", "error", "edit_mode"):
         if result.get(key) is not None:
             compact[key] = result[key]
     revision = result.get("revision")
@@ -149,6 +150,7 @@ def _call_metadata(model_call: OptimizationModelCall | None) -> dict[str, Any]:
         }
     response = model_call.raw_response
     return {
+        "edit_mode": getattr(model_call, "edit_mode", None),
         "prompt_characters": len(model_call.prompt),
         "response_characters": len(response) if response is not None else 0,
         "prompt_sha256": _text_hash(model_call.prompt),

@@ -15,8 +15,8 @@ dependencies = [
 ]
 
 [project.scripts]
-ragskill-self-optimize = "self_optimization.task_flow:main"
 ragskill-task-flow = "self_optimization.task_flow:main"
+ragskill-visualize = "visualization.server:main"
 
 [project.optional-dependencies]
 embedding = [
@@ -36,7 +36,7 @@ rerank = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["framework*", "self_optimization*"]
+include = ["framework*", "self_optimization*", "visualization*"]
 
 [tool.setuptools.package-data]
 framework = [
@@ -44,10 +44,10 @@ framework = [
     "settings.example.yaml",
     "skills/*/*/SKILL.md",
     "skills/*/*/ragskill.yaml",
-    "skills/*/*/agents/*.yaml",
     "skills/*/*/scripts/*.py",
 ]
 self_optimization = [
     "settings.example.yaml",
     "task_flow.example.yaml",
 ]
+visualization = ["static/*.html", "static/*.js", "static/*.css", "static/*.png", "static/*.svg"]

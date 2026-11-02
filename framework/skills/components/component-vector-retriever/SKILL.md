@@ -26,3 +26,11 @@ Output `RetrievalResult`:
 ## Execution
 
 Run `scripts/component.py:run(inputs, context)`. The runtime must provide `context.embed(texts)`. When the runtime additionally provides `context.search_vector_index(...)`, the Component uses its persistent corpus index; otherwise it falls back to direct embedding and cosine scoring. This optional acceleration keeps the Skill executable in Claude Code and other Agent environments that only implement the basic embedding contract. This Component performs similarity retrieval only and does not select a model or another Skill.
+
+The optional `run.prepare(inputs, context)` hook prepares the selected Task's
+Corpus through `context.prepare_corpus_vectors(...)` before any QA starts. Keep
+this hook and query retrieval on the same document formatter and format version.
+Preparation encodes no query. The runtime shares the resulting index across all
+QA workers and later Tasks with the same Corpus, embedding model and document
+representation. With a configured disk cache, later runs load a validated index.
+Contexts exposing only the basic embedding contract can still execute `run`.

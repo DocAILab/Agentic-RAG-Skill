@@ -267,6 +267,14 @@ def _validate_runtime(spec: RAGSkillSpec) -> None:
             f"{spec.package_name} runtime signature must be "
             f"{spec.runtime.callable}{expected}, got {parameters}."
         )
+    prepare = getattr(function, "prepare", None)
+    if prepare is not None:
+        if spec.kind is not SkillKind.COMPONENT or not callable(prepare):
+            raise SkillSpecError(f"{spec.package_name} has an invalid resource preparation hook.")
+        if tuple(inspect.signature(prepare).parameters) != ("inputs", "context"):
+            raise SkillSpecError(
+                f"{spec.package_name} preparation signature must be prepare(inputs, context)."
+            )
 
 
 def _validate_skill_md(skill_file: Path, directory_name: str) -> tuple[str, str]:
@@ -485,5 +493,7 @@ def _load_module(path: Path, package_name: str) -> ModuleType:
     if module_spec is None or module_spec.loader is None:
         raise SkillSpecError(f"Cannot import runtime script: {path}")
     module = importlib.util.module_from_spec(module_spec)
-    module_spec.loader.exec_module(module)
+    # Skill revisions can preserve file size and occur within one timestamp tick;
+    # always execute current source instead of a timestamp-based .pyc cache.
+    exec(compile(path.read_bytes(), str(path), "exec"), module.__dict__)
     return module

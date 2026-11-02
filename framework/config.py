@@ -54,21 +54,6 @@ class APIServiceConfig:
 
 
 @dataclass(frozen=True, slots=True)
-class DemoConfig:
-    """描述 demo 数据、运行范围、请求覆盖值和结果文件。"""
-
-    corpus_path: Path
-    test_path: Path
-    result_path: Path
-    log_path: Path
-    max_examples: int | None = 1
-    candidate_documents_only: bool = True
-    select_skills_per_example: bool = True
-    batch_selection_query_sample_size: int = 20
-    request: Mapping[str, Any] = field(default_factory=dict)
-
-
-@dataclass(frozen=True, slots=True)
 class VectorIndexConfig:
     """描述持久化语料向量索引的缓存目录。"""
 
@@ -86,15 +71,23 @@ class FrameworkConfig:
     embedding: APIServiceConfig | None = None
     vector_index: VectorIndexConfig | None = None
     request_defaults: Mapping[str, Any] = field(default_factory=dict)
-    demo: DemoConfig | None = None
 
 
 def load_framework_config(path: str | Path) -> FrameworkConfig:
     """读取 YAML 配置，解析相对路径并校验必需字段。"""
     config_path = Path(path).resolve()
     payload = _read_yaml(config_path)
-    if int(payload.get("schema_version", 0)) != 1:
+    if type(payload.get("schema_version")) is not int or payload["schema_version"] != 1:
         raise ConfigError("Only config schema_version 1 is supported")
+    if "demo" in payload:
+        raise ConfigError(
+            "The legacy demo section is no longer supported; remove it and "
+            "select a Group in the task-flow configuration or with --group"
+        )
+    allowed_root = {"schema_version", "skills", "runtime", "executor", "embedding"}
+    unknown_root = set(payload) - allowed_root
+    if unknown_root:
+        raise ConfigError(f"Unknown framework config keys: {sorted(unknown_root)}")
 
     skills = _required_mapping(payload, "skills")
     root_value = _required_text(skills, "root")
@@ -126,13 +119,6 @@ def load_framework_config(path: str | Path) -> FrameworkConfig:
             raise ConfigError("embedding must be a mapping")
         if bool(embedding_payload.get("enabled", True)):
             embedding = _parse_service(embedding_payload, "embedding")
-    demo_payload = payload.get("demo")
-    demo = None
-    if demo_payload is not None:
-        if not isinstance(demo_payload, Mapping):
-            raise ConfigError("demo must be a mapping")
-        demo = _parse_demo(demo_payload, config_path)
-
     return FrameworkConfig(
         config_path=config_path,
         skill_root=skill_root,
@@ -141,7 +127,6 @@ def load_framework_config(path: str | Path) -> FrameworkConfig:
         embedding=embedding,
         vector_index=vector_index,
         request_defaults=dict(request_defaults),
-        demo=demo,
     )
 
 
@@ -305,83 +290,6 @@ def _parse_vector_index(
             f"runtime.vector_index.cache_dir is not a directory: {cache_dir}"
         )
     return VectorIndexConfig(cache_dir=cache_dir)
-
-
-def _parse_demo(payload: Mapping[str, Any], config_path: Path) -> DemoConfig:
-    """解析 demo 数据路径、样本限制和请求参数。"""
-    corpus_path = _resolve_config_path(
-        _required_text(payload, "corpus_path"),
-        config_path,
-    )
-    test_path = _resolve_config_path(
-        _required_text(payload, "test_path"),
-        config_path,
-    )
-    output = _required_mapping(payload, "output")
-    result_path = _resolve_config_path(
-        _required_text(output, "result_path"),
-        config_path,
-    )
-    log_path = _resolve_config_path(
-        _required_text(output, "log_path"),
-        config_path,
-    )
-    if result_path == log_path:
-        raise ConfigError("demo.output result_path and log_path must be different")
-    if not corpus_path.is_file():
-        raise ConfigError(f"demo.corpus_path does not exist: {corpus_path}")
-    if not test_path.is_file():
-        raise ConfigError(f"demo.test_path does not exist: {test_path}")
-
-    max_examples_value = payload.get("max_examples", 1)
-    if max_examples_value is None:
-        max_examples = None
-    elif isinstance(max_examples_value, bool) or not isinstance(
-        max_examples_value, int
-    ):
-        raise ConfigError("demo.max_examples must be a positive integer or null")
-    elif max_examples_value <= 0:
-        raise ConfigError("demo.max_examples must be positive")
-    else:
-        max_examples = max_examples_value
-
-    candidate_documents_only = payload.get("candidate_documents_only", True)
-    if not isinstance(candidate_documents_only, bool):
-        raise ConfigError("demo.candidate_documents_only must be boolean")
-    select_skills_per_example = payload.get("select_skills_per_example", True)
-    if not isinstance(select_skills_per_example, bool):
-        raise ConfigError("demo.select_skills_per_example must be boolean")
-    batch_selection_query_sample_size = payload.get(
-        "batch_selection_query_sample_size",
-        20,
-    )
-    if (
-        isinstance(batch_selection_query_sample_size, bool)
-        or not isinstance(batch_selection_query_sample_size, int)
-        or batch_selection_query_sample_size <= 0
-    ):
-        raise ConfigError(
-            "demo.batch_selection_query_sample_size must be a positive integer"
-        )
-    request = payload.get("request", {})
-    if not isinstance(request, Mapping):
-        raise ConfigError("demo.request must be a mapping")
-    reserved = {"documents", "query"} & set(request)
-    if reserved:
-        raise ConfigError(
-            f"demo.request cannot override runtime fields: {sorted(reserved)}"
-        )
-    return DemoConfig(
-        corpus_path=corpus_path,
-        test_path=test_path,
-        result_path=result_path,
-        log_path=log_path,
-        max_examples=max_examples,
-        candidate_documents_only=candidate_documents_only,
-        select_skills_per_example=select_skills_per_example,
-        batch_selection_query_sample_size=batch_selection_query_sample_size,
-        request=dict(request),
-    )
 
 
 def _create_model_from_service(service: APIServiceConfig) -> ModelClient:

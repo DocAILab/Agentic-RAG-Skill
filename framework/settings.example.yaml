@@ -1,5 +1,6 @@
 # Copy to settings.yaml and configure Executor/Embedding services.
 # Paths are relative to this file. Generated indexes stay outside the project.
+# Task data are selected by the Group workflow; this config has no demo section.
 schema_version: 1
 skills:
   root: skills
@@ -14,15 +15,19 @@ runtime:
     rank_constant: 60
 executor:
   provider: openai-compatible
-  model: deepseek-v4-flash
-  base_url: https://api.vveai.com/v1
+  model: deepseek-v4.1-flash-1017
+  base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
   api_key: null
-  api_key_env: VVEAI_API_KEY
+  api_key_env: DASHSCOPE_API_KEY
   timeout_seconds: 600
   extra_headers: {}
   options:
     max_retries: 2
     retry_backoff_seconds: 2.0
+    # HyDE/classifier/critic requests use small output budgets; require final text.
+    # DeepSeek enables thinking by default, which can consume the entire budget.
+    extra_body:
+      enable_thinking: false
 embedding:
   enabled: true
   provider: sentence-transformers

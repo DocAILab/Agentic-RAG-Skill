@@ -14,9 +14,7 @@ from .optimizer import (
     OptimizationError,
     OptimizationNoChange,
     SkillOptimizer,
-    parse_optimization_proposal,
 )
-from .runner import SelfOptimizationError, run_self_optimization as run_sample_optimization
 from .task_config import (
     RAGTaskConfig,
     TaskWorkflowConfig,
@@ -25,9 +23,6 @@ from .task_config import (
 )
 from .task_flow import TaskWorkflowError, run_task_workflow, validate_task_workflow
 from .workspace import RevisionRejected, SkillWorkspace, WorkspaceError
-
-# The package API and all CLI entrypoints execute the same Task/Group workflow.
-run_self_optimization = run_task_workflow
 
 __all__ = [
     "DataGroup",
@@ -43,7 +38,6 @@ __all__ = [
     "RevisionResult",
     "SelfOptimizationConfig",
     "SelfOptimizationConfigError",
-    "SelfOptimizationError",
     "SkillEdit",
     "SkillOptimizer",
     "SkillWorkspace",
@@ -55,9 +49,6 @@ __all__ = [
     "load_self_optimization_config",
     "load_group",
     "load_task_workflow_config",
-    "parse_optimization_proposal",
-    "run_self_optimization",
-    "run_sample_optimization",
     "run_task_workflow",
     "validate_task_workflow",
 ]

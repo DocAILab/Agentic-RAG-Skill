@@ -1,18 +1,22 @@
 # Group 数据格式
 
-本目录只包含可直接加载的最终数据。下载、转换、抽样、测试、缓存和中间产物保存在仓库外的 `../Preparation/`。运行框架不依赖该准备目录中的代码；只需当前仓库的数据文件。
+本目录只包含可直接加载的最终数据。下载、转换、抽样、测试、缓存和中间产物保存在仓库外的 `../../Preparation/`。运行框架不依赖该准备目录中的代码；只需当前仓库的数据文件。
 
 ## 当前数据
 
-| Group | 来源 | Task | 每 Task QA | Corpus | Reference | Distractor |
-|---|---|---:|---:|---:|---:|---:|
-| `hotpotqa-train-001` | HotpotQA train | 20 | 50 | 6,000 | 1,977 | 4,023 |
-| `2wiki-train-001` | 2WikiMultihopQA train | 20 | 50 | 6,000 | 2,311 | 3,689 |
-| `triviaqa-train-001` | TriviaQA RC train | 20 | 50 | 6,000 | 5,507 | 493 |
+| 数据集 | Group 数 | 独立有效 QA | QA 总出现次数 | 每组 Task × QA | 每组 Corpus | 每组 Reference 范围 |
+|---|---:|---:|---:|---:|---:|---:|
+| HotpotQA | 91 | 90,447 | 91,000 | 20 × 50 | 6,000 | 1,968–1,991 |
+| 2WikiMultihopQA | 168 | 167,454 | 168,000 | 20 × 50 | 6,000 | 1,917–3,546 |
+| TriviaQA RC | 102 | 76,220 | 102,000 | 20 × 50 | 6,000 | 973–6,000 |
+
+总计 **361 个 Group、334,121 条独立有效 QA、361,000 次 QA 出现**，覆盖所固定版本训练源中的全部有效 QA。每个 Group 内 QA 唯一；不同 Group 允许重复采样。每组 distractor 数为 6,000 减去 reference 数，详细计数见 [catalog](groups/catalog.json)。
+
+TriviaQA 完整训练源包含 **76,523 个独立 QuestionId**，合并 wiki/web 证据与答案变体后，保留 **76,220 条有效 QA**。另外 **303 条**因候选证据中没有有效答案别名匹配（`missing_weak_reference`）而排除。
 
 FinanceBench 暂不纳入。以上规模是已发布 Group 的参数，不是框架硬限制。
 
-每组取固定源版本、源顺序中前 1,000 个有效独立 QA。TriviaQA 已跨训练分片合并选中问题的 wiki/web 证据变体。随后按固定种子确定 Task 分配，QA 在组内互斥。来源、版本、过滤口径、文件哈希和实际计数记录在各组 `group.json`。
+原有 `*-train-001` 保持不变。扩建覆盖固定版本的完整训练源：先将已发布 QA 计入覆盖，再在每个新 Group 中放入尚未覆盖的 QA，按完整 reference 并集检查 6,000 篇容量，必要时复用低增量 QA 补足 1,000 题。重复仅发生在 Group 之间，不截断任何题的 gold，也不复制文档填充 Corpus。TriviaQA 在筛选有效 QA 前已合并全部训练分片中的 wiki/web 证据和答案变体；无有效 reference 的问题如实排除。Task 顺序和干扰文档选择由固定种子与 Group ID 决定。各组 `group.json` 记录源版本、选样策略、源序号、新增/复用数量和哈希。
 
 ## 文件布局
 
@@ -27,11 +31,17 @@ data/groups/
     tasks/task-0001.jsonl
     ...
     tasks/task-0020.jsonl
+  hotpotqa-train-002/...
+  ...
   2wiki-train-001/...
+  2wiki-train-002/...
+  ...
   triviaqa-train-001/...
+  triviaqa-train-002/...
+  ...
 ```
 
-各 Group 拥有独立的完整 Corpus 文件。内容允许跨 Group 重叠，但规范化内容集合不能完全相同；不同文件顺序、Group 名称或本地 ID 不构成语料差异。目录索引与组间重叠统计记录在 catalog 中。
+各 Group 拥有独立的完整 Corpus 文件。内容允许跨 Group 重叠，但规范化内容集合不能完全相同；不同文件顺序、Group 名称或本地 ID 不构成语料差异。目录索引与组间重叠统计记录在 catalog 中。`coverage` 给出各数据集有效 QA 全集覆盖和重复出现次数；`corpus_overlap` 给出每对 Group 的语料重叠，`qa_overlap` 仅列出共享 QA 数大于零的组对。
 
 ## Corpus 记录
 
@@ -46,7 +56,7 @@ data/groups/
 - `origin`：`qa_context` 表示来自所选 QA 的原始文档；`supplement` 表示从其他问题的文档池补充。
 - `source`：保留来源信息用于审计，运行时不会交给 Skill。
 
-首先保留全部 reference，再按固定种子抽取非 reference 文档补足目标容量。原始候选全集没有必须保留的要求。容量小于 reference 数、有效 QA 不足、补充池不足均应拒绝构建，不能截断 gold 或重复填充。
+首先保留全部 reference，再按固定种子抽取非 reference 文档补足目标容量。原始候选全集没有必须保留的要求。容量小于完整 reference 并集、单组可用的不同 QA 不足 1,000 条、独立文档池不足均应拒绝构建。允许复用其他 Group 已使用的 QA；同一 Group 内不能重复 QA，同一 Corpus 内不能重复文档，也不能截断任何 gold。
 
 ## QA 记录
 

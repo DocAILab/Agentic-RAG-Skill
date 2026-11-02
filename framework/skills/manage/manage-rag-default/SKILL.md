@@ -7,6 +7,11 @@ description: Analyze a RAG task and produce guidance for choosing exactly one av
 
 Analyze the query and execution state before any Agentic or Component Skill body is loaded.
 
+For `selection_scope="task_shared"`, analyze every question in the Task and
+recommend one shared workflow and set of bindings. Each question will execute
+independently under that plan; do not merge questions or answer them during
+planning. A later Task is planned again using the current Skill instructions.
+
 ## Selection procedure
 
 1. Determine whether the task needs retrieval and identify the evidence required for a grounded answer.

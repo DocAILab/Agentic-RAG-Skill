@@ -18,7 +18,7 @@ from uuid import uuid4
 
 from framework import RAGSkillSpec, SkillSpecError, discover_specs
 
-from .contracts import OptimizationProposal, RevisionResult, SkillEdit
+from .contracts import OptimizationProposal, RevisionResult, SkillEdit, materialize_patch
 from .python_validation import (
     validate_agentic_slot_references,
     validate_component_context_contract,
@@ -37,6 +37,19 @@ class WorkspaceError(ValueError):
 
 class RevisionRejected(WorkspaceError):
     """表示优化提案越界、无变化或破坏了 Skill 契约并已回滚。"""
+
+
+def _filesystem_path(path: str | Path) -> Path:
+    """Use absolute paths and native long-path I/O on Windows, without OS changes."""
+    resolved = Path(path).resolve()
+    if os.name != "nt":
+        return resolved
+    text = str(resolved)
+    if text.startswith("\\\\?\\"):
+        return resolved
+    if text.startswith("\\\\"):
+        return Path("\\\\?\\UNC\\" + text[2:])
+    return Path("\\\\?\\" + text)
 
 
 @dataclass(slots=True)
@@ -59,8 +72,8 @@ class SkillWorkspace:
         run_id: str | None = None,
     ) -> SkillWorkspace:
         """校验基础 Skill 后创建一次性运行目录和完整工作副本。"""
-        source = Path(source_root).resolve()
-        runs = Path(runs_root).resolve()
+        source = _filesystem_path(source_root)
+        runs = _filesystem_path(runs_root)
         if not source.is_dir():
             raise WorkspaceError(f"Source Skill root does not exist: {source}")
         _reject_symlinks(source)
@@ -116,6 +129,26 @@ class SkillWorkspace:
     def run_id(self) -> str:
         """返回当前工作区目录所代表的稳定运行标识。"""
         return self.run_root.name
+
+    @classmethod
+    def open_existing(cls, source_root: str | Path, runs_root: str | Path, *, run_id: str) -> SkillWorkspace:
+        """Reopen a recorded workspace; TaskCheckpoint handles interrupted Skills."""
+        if not _RUN_ID_PATTERN.fullmatch(run_id):
+            raise WorkspaceError("Invalid resume run_id")
+        source, runs = _filesystem_path(source_root), _filesystem_path(runs_root)
+        run = (runs / run_id).resolve()
+        if run.parent != runs or not run.is_dir() or run.is_symlink():
+            raise WorkspaceError("Resume run directory is missing or unsafe")
+        record = json.loads((run / "workspace.json").read_text(encoding="utf-8"))
+        skills = run / "skills"
+        if record.get("run_id") != run_id or _filesystem_path(record["source_root"]) != source or _filesystem_path(record["skill_root"]) != skills:
+            raise WorkspaceError("Workspace manifest does not match the requested run/source")
+        _reject_symlinks(source)
+        workspace = cls(source, run, skills, run / "revisions", record["source_hash"])
+        workspace.assert_source_unchanged()
+        workspace._revision_number = max((int(p.name.split("-")[1]) for p in workspace.revisions_root.iterdir()
+            if p.is_dir() and re.fullmatch(r"revision-\d+", p.name)), default=0)
+        return workspace
 
     def working_hash(self) -> str:
         """计算当前 Skill 工作副本的内容哈希，用于记录跨 task 的版本变化。"""
@@ -208,6 +241,26 @@ class SkillWorkspace:
             max_file_chars=max_file_chars,
             allow_new_files=allow_new_files,
         )
+        if proposal.edit_mode not in {"full", "patch"}:
+            raise RevisionRejected("Proposal edit_mode must be full or patch")
+        if proposal.edit_mode == "patch":
+            # Check every base before writing even the first file. A stale or
+            # tampered multi-file patch must leave the entire working tree intact.
+            for edit in proposal.edits:
+                target = _resolve_edit_target(spec.package_path, edit.path)
+                if not target.is_file():
+                    raise RevisionRejected("Patch mode cannot create files")
+                try:
+                    materialized = materialize_patch(
+                        target.read_text(encoding="utf-8"), edit.base_sha256,
+                        edit.replacements,
+                    )
+                except (OSError, UnicodeError, ValueError) as exc:
+                    raise RevisionRejected(f"Patch rejected before application: {exc}") from exc
+                if materialized != edit.content:
+                    raise RevisionRejected("Patch materialized content does not match its original action")
+        elif any(edit.base_sha256 is not None or edit.replacements for edit in proposal.edits):
+            raise RevisionRejected("Full mode cannot contain patch provenance")
 
         self._revision_number += 1
         revision_id = f"revision-{self._revision_number:04d}"
@@ -259,6 +312,7 @@ class SkillWorkspace:
                     "status": "rejected",
                     "error_type": type(exc).__name__,
                     "error": str(exc),
+                    "edit_mode": proposal.edit_mode,
                 },
             )
             self.assert_source_unchanged()
@@ -278,6 +332,7 @@ class SkillWorkspace:
             after_hash=after_hash,
             revision_dir=revision_dir,
             diff_path=diff_path,
+            edit_mode=proposal.edit_mode,
         )
         _write_json(revision_dir / "result.json", {"status": "accepted", **result.to_dict()})
         self.assert_source_unchanged()
@@ -291,7 +346,11 @@ class SkillWorkspace:
                 "Source Skill repository changed during self-optimization"
             )
 
-    def rollback_revision(self, revision: RevisionResult, *, reason: str) -> None:
+    def rollback_revision(
+        self, revision: RevisionResult, *, reason: str,
+        failure_category: str = "execution_validation_failed",
+        verification: Mapping[str, Any] | None = None,
+    ) -> None:
         """把已应用修订恢复为其 before 快照，并记录动态验证失败原因。"""
         specs = _specs_by_name(self.skill_root)
         spec = specs.get(revision.selected_skill)
@@ -310,6 +369,8 @@ class SkillWorkspace:
             {
                 "status": "rolled_back",
                 "reason": reason,
+                "failure_category": failure_category,
+                "verification": verification,
                 **revision.to_dict(),
             },
         )

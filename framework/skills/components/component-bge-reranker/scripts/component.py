@@ -1,10 +1,10 @@
 """基于本地 BGE 交叉编码器（Cross-Encoder）的具体 Reranker Component。"""
 
-_RERANKER_CACHE = {}
+from framework.reranking import score_cross_encoder_pairs
 
 def run(inputs, context):
     """将查询与候选文档组成 (query, passage) 对，用 BGE 交叉编码器打分并重排。"""
-    del context  # 本组件加载本地交叉编码器，不依赖运行时注入的 Executor/Embedding 服务
+    del context  # 模型由 framework 的进程级资源持有者共享，不依赖 Group 实例。
     query = str(inputs["query"])
     documents = [dict(document) for document in inputs.get("documents", ())]
     top_k = int(inputs.get("top_k", 3))
@@ -37,26 +37,10 @@ def run(inputs, context):
 
 
 def _score_pairs(model, pairs, *, batch_size, max_length, device):
-    """延迟加载 CrossEncoder，返回相关性分数。"""
-    reranker = _get_reranker(model, max_length=max_length, device=device)
-    return reranker.predict(
-        pairs,
+    """复用 framework 持有的 CrossEncoder，返回相关性分数。"""
+    return score_cross_encoder_pairs(
+        model, pairs,
         batch_size=batch_size,
-        show_progress_bar=False,
+        max_length=max_length,
+        device=device,
     )
-
-def _get_reranker(model, *, max_length=None, device=None):
-    """按模型、长度限制和设备缓存 CrossEncoder 实例，避免重复下载权重。"""
-    key = (model, max_length, device)
-    reranker = _RERANKER_CACHE.get(key)
-    if reranker is None:
-        try:
-            from sentence_transformers import CrossEncoder
-        except ImportError as exc:
-            raise RuntimeError(
-                "BGE reranker requires the 'sentence-transformers' package. "
-                'Install it with: pip install -e ".[rerank]"'
-            ) from exc
-        reranker = CrossEncoder(model, max_length=max_length, device=device)
-        _RERANKER_CACHE[key] = reranker
-    return reranker

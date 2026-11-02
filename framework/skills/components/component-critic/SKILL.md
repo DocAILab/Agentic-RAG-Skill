@@ -15,6 +15,8 @@ Input `CritiqueRequest`:
 - `documents`: selected evidence documents
 - `answer`: generated answer
 - optional `max_tokens`
+- optional `evidence_query`: non-empty original question used to select evidence
+  windows; defaults to `query`. Use the same value as the generator.
 
 Output `CritiqueResult`:
 
@@ -25,4 +27,4 @@ Output `CritiqueResult`:
 
 ## Execution
 
-Run `scripts/component.py:run(inputs, context)`. The runtime must provide the frozen `context.call_model(...)`. This Component critiques an answer only; it does not retrieve documents, generate a replacement answer, or select another Skill.
+Run `scripts/component.py:run(inputs, context)`. The runtime must provide the frozen `context.call_model(...)`. Shared `framework.prepare_evidence` selects the same evidence view as the generator for the same original question and document sequence: 4 KiB per document and 96 KiB total UTF-8 bytes including evidence formatting. Short documents remain intact; longer ones expose selected windows and mark omissions. Supported runtimes record IDs, original character offsets and counts in component timings. This Component critiques an answer only; it does not retrieve documents, generate a replacement answer, or select another Skill.
