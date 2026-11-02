@@ -7,8 +7,9 @@ import heapq
 import json
 import os
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
+from time import perf_counter
 from typing import Any
 from uuid import uuid4
 
@@ -30,6 +31,9 @@ class DenseVectorIndex:
     vectors: np.ndarray = field(repr=False)
     source: str = "built"
     cache_path: Path | None = None
+    build_seconds: float = 0.0
+    load_seconds: float = 0.0
+    disk_lookup_seconds: float = 0.0
 
     @property
     def dimension(self) -> int:
@@ -113,9 +117,11 @@ def build_or_load_vector_index(
         text_format_version=text_format_version,
     )
     cache_path = cache_root / cache_key if cache_root is not None else None
+    disk_lookup_seconds = 0.0
     if cache_path is not None:
+        load_started = perf_counter()
         try:
-            return _load_vector_index(
+            index = _load_vector_index(
                 cache_path,
                 cache_key=cache_key,
                 document_ids=normalized_ids,
@@ -123,8 +129,11 @@ def build_or_load_vector_index(
                 text_format_version=text_format_version,
             )
         except (OSError, ValueError, TypeError):
-            pass
+            disk_lookup_seconds = perf_counter() - load_started
+        else:
+            return replace(index, load_seconds=perf_counter() - load_started)
 
+    build_started = perf_counter()
     encoded = list(embed(normalized_texts))
     vectors = _normalize_document_vectors(encoded, len(normalized_ids))
     if cache_path is not None:
@@ -142,6 +151,8 @@ def build_or_load_vector_index(
         vectors=vectors,
         source="built",
         cache_path=cache_path,
+        build_seconds=perf_counter() - build_started,
+        disk_lookup_seconds=disk_lookup_seconds,
     )
 
 

@@ -267,6 +267,14 @@ def _validate_runtime(spec: RAGSkillSpec) -> None:
             f"{spec.package_name} runtime signature must be "
             f"{spec.runtime.callable}{expected}, got {parameters}."
         )
+    prepare = getattr(function, "prepare", None)
+    if prepare is not None:
+        if spec.kind is not SkillKind.COMPONENT or not callable(prepare):
+            raise SkillSpecError(f"{spec.package_name} has an invalid resource preparation hook.")
+        if tuple(inspect.signature(prepare).parameters) != ("inputs", "context"):
+            raise SkillSpecError(
+                f"{spec.package_name} preparation signature must be prepare(inputs, context)."
+            )
 
 
 def _validate_skill_md(skill_file: Path, directory_name: str) -> tuple[str, str]:

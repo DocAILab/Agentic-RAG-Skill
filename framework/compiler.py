@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import __future__
 import hashlib
 import json
 import marshal
@@ -85,6 +86,9 @@ def _portable_code(code: CodeType) -> CodeType:
     """实现摘要排除工作副本路径，保持相同 Skill 跨运行的磁盘缓存可复用。"""
     return code.replace(
         co_filename="",
+        # Dynamic Skill loading can inherit this flag from its loader. It
+        # changes annotations, not the formatter's document representation.
+        co_flags=code.co_flags & ~__future__.annotations.compiler_flag,
         co_consts=tuple(
             _portable_code(value) if isinstance(value, CodeType) else value
             for value in code.co_consts
@@ -106,6 +110,9 @@ class _RuntimeSharedResources:
     vector_disk_loads: int = 0
     vector_memory_hits: int = 0
     vector_queries: int = 0
+    vector_preparations: int = 0
+    vector_failed_operations: int = 0
+    vector_seconds: dict[str, float] = field(default_factory=dict)
     vector_lock: Any = field(default_factory=RLock, repr=False)
     corpus_artifacts: dict[tuple[str, str, str], Any] = field(default_factory=dict)
     corpus_builds: int = 0
@@ -139,6 +146,7 @@ class RuntimeComponentContext:
     )
     _bound_corpus_key: str | None = field(default=None, init=False, repr=False)
     _pending_evidence_selection: dict[str, Any] | None = field(default=None, init=False, repr=False)
+    _pending_vector_operations: list[dict[str, Any]] = field(default_factory=list, init=False, repr=False)
 
     def __post_init__(self) -> None:
         """规范化缓存目录，并在未显式提供时推导 Embedding 模型指纹。"""
@@ -177,6 +185,12 @@ class RuntimeComponentContext:
         metadata = self._pending_evidence_selection
         self._pending_evidence_selection = None
         return metadata
+
+    def take_vector_operations(self) -> list[dict[str, Any]]:
+        """Consume only this question's current Component index operations."""
+        records = self._pending_vector_operations
+        self._pending_vector_operations = []
+        return records
 
     def bind_corpus(
         self,
@@ -374,6 +388,24 @@ class RuntimeComponentContext:
         """对已绑定 Group 的快路径；非同一只读语料返回 None 供组件回退。"""
         if documents is not self._bound_corpus:
             return None
+        ids, texts, key, positions, embedding_identity, format_identity = self._corpus_vector_inputs(
+            documents, text_format_version=text_format_version, text_formatter=text_formatter,
+        )
+        ranked = self._search_vector_index(
+            query_text=query_text,
+            document_ids=ids,
+            document_texts=texts,
+            top_k=top_k,
+            text_format_version=format_identity,
+            embedding_identity=embedding_identity,
+            cache_key=key,
+        )
+        return [(positions[index], score) for index, score in ranked]
+
+    def _corpus_vector_inputs(self, documents, *, text_format_version, text_formatter):
+        """Share the exact document representation between preparation and search."""
+        if documents is not self._bound_corpus:
+            raise ExecutionError("Vector preparation requires the bound read-only Corpus")
         embedding_identity = self._current_embedding_identity()
         formatter_code = getattr(text_formatter, "__code__", None)
         implementation = hashlib.sha256(
@@ -399,16 +431,97 @@ class RuntimeComponentContext:
             version=f"{embedding_identity}:{format_identity}",
             build=prepare_inputs,
         )
-        ranked = self._search_vector_index(
-            query_text=query_text,
-            document_ids=ids,
-            document_texts=texts,
-            top_k=top_k,
-            text_format_version=format_identity,
-            embedding_identity=embedding_identity,
-            cache_key=key,
-        )
-        return [(positions[index], score) for index, score in ranked]
+        return ids, texts, key, positions, embedding_identity, format_identity
+
+    def prepare_corpus_vectors(
+        self, *, documents: Sequence[Mapping[str, Any]], text_format_version: str,
+        text_formatter: Callable[[Mapping[str, Any]], str],
+    ) -> dict[str, Any]:
+        """Load/build the selected Corpus index without encoding a query."""
+        started = perf_counter()
+        record = self._vector_operation_record("prepare", document_count=len(documents))
+        try:
+            ids, texts, key, _, identity, format_identity = self._corpus_vector_inputs(
+                documents, text_format_version=text_format_version, text_formatter=text_formatter,
+            )
+            self._get_vector_index(
+                document_ids=ids, document_texts=texts, embedding_identity=identity,
+                text_format_version=format_identity, cache_key=key, record=record,
+            )
+            record["status"] = "completed"
+            with self._shared.vector_lock:
+                self._shared.vector_preparations += 1
+        except BaseException as exc:
+            record["error_type"] = type(exc).__name__
+            raise
+        finally:
+            record["duration_seconds"] = perf_counter() - started
+            self._record_vector_operation(record)
+        return dict(record)
+
+    @staticmethod
+    def _vector_operation_record(operation, *, document_count):
+        return {
+            "operation": operation, "status": "failed", "cache_source": None,
+            "cache_hit": False, "document_count": document_count,
+            "build_seconds": 0.0, "load_seconds": 0.0, "disk_lookup_seconds": 0.0,
+            "wait_seconds": 0.0, "query_seconds": 0.0,
+            "query_embedding_seconds": 0.0, "search_seconds": 0.0,
+        }
+
+    def _record_vector_operation(self, record):
+        self._pending_vector_operations.append(dict(record))
+        with self._shared.vector_lock:
+            if record["status"] == "failed":
+                self._shared.vector_failed_operations += 1
+            for key in ("build_seconds", "load_seconds", "disk_lookup_seconds",
+                        "wait_seconds", "query_seconds", "query_embedding_seconds", "search_seconds"):
+                value = record.get(key)
+                if isinstance(value, (int, float)):
+                    totals = self._shared.vector_seconds
+                    totals[key] = totals.get(key, 0.0) + value
+        if callable(getattr(self.component_observer, "record_vector_index", None)):
+            _observe_component(self.component_observer, "record_vector_index", dict(record))
+
+    def _get_vector_index(
+        self, *, document_ids, document_texts, text_format_version,
+        embedding_identity, cache_key, record,
+    ) -> DenseVectorIndex:
+        """Single-flight index acquisition shared by warmup and all QA forks."""
+        waiting = perf_counter()
+        record["cache_key"] = cache_key
+        with self._shared.vector_lock:
+            record["wait_seconds"] = perf_counter() - waiting
+            index = self._shared.vector_indexes.get(cache_key)
+            if index is None:
+                try:
+                    index = build_or_load_vector_index(
+                        document_ids, document_texts, embed=self._embed_index_documents,
+                        embedding_fingerprint=embedding_identity,
+                        text_format_version=text_format_version,
+                        cache_root=self.vector_index_cache_dir,
+                    )
+                except BaseException:
+                    # Failed acquisition has no trustworthy load/build split.
+                    record.update(build_seconds=None, load_seconds=None, disk_lookup_seconds=None)
+                    raise
+                self._shared.vector_indexes[cache_key] = index
+                record.update(build_seconds=index.build_seconds, load_seconds=index.load_seconds,
+                              disk_lookup_seconds=index.disk_lookup_seconds)
+                if index.source == "disk":
+                    self._shared.vector_disk_loads += 1
+                else:
+                    self._shared.vector_builds += 1
+                source = index.source
+            else:
+                self._shared.vector_memory_hits += 1
+                source = "memory"
+            record.update(
+                cache_source=source, cache_hit=source in {"disk", "memory"},
+                cache_path=str(index.cache_path) if index.cache_path is not None else None,
+                dimension=index.dimension,
+            )
+            return index
 
     def _search_vector_index(
         self,
@@ -422,41 +535,45 @@ class RuntimeComponentContext:
         cache_key: str,
     ) -> Sequence[tuple[int, float]]:
         assert self.embedding_model is not None
-        with self._shared.vector_lock:
-            index = self._shared.vector_indexes.get(cache_key)
-            if index is None:
-                index = build_or_load_vector_index(
-                    document_ids,
-                    document_texts,
-                    embed=self._embed_index_documents,
-                    embedding_fingerprint=embedding_identity,
-                    text_format_version=text_format_version,
-                    cache_root=self.vector_index_cache_dir,
-                )
-                self._shared.vector_indexes[cache_key] = index
-                if index.source == "disk":
-                    self._shared.vector_disk_loads += 1
-                else:
-                    self._shared.vector_builds += 1
-                source = index.source
-            else:
-                self._shared.vector_memory_hits += 1
-                source = "memory"
-
-        query_vectors = self.embed([query_text])
-        if len(query_vectors) != 1:
-            raise ExecutionError("Embedding model did not return one query vector")
-        results = index.search(query_vectors[0], top_k)
-        with self._shared.vector_lock:
-            self._shared.vector_queries += 1
-        self._last_vector_index = {
-            "cache_key": index.cache_key,
-            "source": source,
-            "cache_path": str(index.cache_path) if index.cache_path is not None else None,
-            "document_count": len(index.document_ids),
-            "dimension": index.dimension,
-        }
-        return results
+        started = perf_counter()
+        record = self._vector_operation_record("query", document_count=len(document_ids))
+        try:
+            index = self._get_vector_index(
+                document_ids=document_ids, document_texts=document_texts,
+                text_format_version=text_format_version, embedding_identity=embedding_identity,
+                cache_key=cache_key, record=record,
+            )
+            query_started = perf_counter()
+            try:
+                embedding_started = perf_counter()
+                try:
+                    query_vectors = self.embed([query_text])
+                finally:
+                    record["query_embedding_seconds"] = perf_counter() - embedding_started
+                if len(query_vectors) != 1:
+                    raise ExecutionError("Embedding model did not return one query vector")
+                search_started = perf_counter()
+                try:
+                    results = index.search(query_vectors[0], top_k)
+                finally:
+                    record["search_seconds"] = perf_counter() - search_started
+            finally:
+                record["query_seconds"] = perf_counter() - query_started
+            with self._shared.vector_lock:
+                self._shared.vector_queries += 1
+            self._last_vector_index = {
+                "cache_key": index.cache_key, "source": record["cache_source"],
+                "cache_path": record["cache_path"],
+                "document_count": len(index.document_ids), "dimension": index.dimension,
+            }
+            record["status"] = "completed"
+            return results
+        except BaseException as exc:
+            record["error_type"] = type(exc).__name__
+            raise
+        finally:
+            record["duration_seconds"] = perf_counter() - started
+            self._record_vector_operation(record)
 
     def _embed_index_documents(self, texts: Sequence[str]) -> Sequence[Sequence[float]]:
         """Serialize index encoding with query encoding without caching corpus text."""
@@ -480,6 +597,9 @@ class RuntimeComponentContext:
                 "disk_loads": self._shared.vector_disk_loads,
                 "memory_hits": self._shared.vector_memory_hits,
                 "queries": self._shared.vector_queries,
+                "preparations": self._shared.vector_preparations,
+                "failed_operations": self._shared.vector_failed_operations,
+                "timings": dict(self._shared.vector_seconds),
                 "active_indexes": len(self._shared.vector_indexes),
                 "last_index": (
                     dict(self._last_vector_index)
@@ -534,6 +654,9 @@ class BoundComponentInvoker:
         take_evidence = getattr(self.context, "take_evidence_selection", None)
         if callable(take_evidence):
             take_evidence()
+        take_vectors = getattr(self.context, "take_vector_operations", None)
+        if callable(take_vectors):
+            take_vectors()
         observer = getattr(self.context, "component_observer", None)
         observation = _observe_component(
             observer, "begin_component", component_name=component_name, slot=slot,
@@ -566,6 +689,9 @@ class BoundComponentInvoker:
                 metadata = take_evidence() if callable(take_evidence) else None
                 if metadata is not None:
                     timing["evidence_selection"] = metadata
+                vectors = take_vectors() if callable(take_vectors) else []
+                if vectors:
+                    timing["vector_index"] = vectors
                 self._call_timings.append(timing)
             finally:
                 _observe_component(observer, "end_component", observation, result=result,
@@ -633,6 +759,32 @@ class CompiledRAGCommand:
         _validate_documents(normalized.get("documents"), label="Workflow result")
         normalized["component_timings"] = self._components.call_timings()
         return normalized
+
+    def prepare_resources(self, request: Mapping[str, Any]) -> list[dict[str, Any]]:
+        """Prepare selected Components once before admitting a Task's QA.
+
+        Components may attach ``run.prepare(inputs, context)``. Its document
+        representation must match its query path; the runtime owns cache reuse.
+        Ordinary Components have no preparation hook and perform no work here.
+        """
+        records, prepared = [], set()
+        for slot, functions in self._components.bindings.items():
+            for index, function in enumerate(functions):
+                name = self.binding_names[slot][index]
+                if name in prepared:
+                    continue
+                prepared.add(name)
+                prepare = getattr(function, "prepare", None)
+                if prepare is None:
+                    continue
+                if not callable(prepare):
+                    raise ExecutionError(f"Component '{name}' has an invalid preparation hook")
+                record = prepare(dict(request), self._components.context)
+                if record is not None:
+                    if not isinstance(record, Mapping):
+                        raise ExecutionError(f"Component '{name}' preparation returned a non-mapping result")
+                    records.append({**record, "component": name, "slot": slot, "index": index})
+        return records
 
     def __call__(self, request: Mapping[str, Any]) -> dict[str, Any]:
         """允许将已编译命令作为普通 Python 函数直接调用。"""

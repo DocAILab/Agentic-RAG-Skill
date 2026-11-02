@@ -39,9 +39,13 @@ class OptimizationSettings:
     continue_on_optimization_error: bool = True
     # Validate execution and interfaces; answer quality never gates retention.
     verify_revision_execution: bool = True
+    # Preserve the historical replacement protocol unless explicitly selected.
+    edit_mode: str = "full"
 
     def __post_init__(self) -> None:
         """校验优化轮数、模型参数和上下文边界均可安全执行。"""
+        if not isinstance(self.edit_mode, str) or self.edit_mode not in {"full", "patch"}:
+            raise SelfOptimizationConfigError("optimization.edit_mode must be full or patch")
         if not 0.0 <= self.temperature <= 2.0:
             raise SelfOptimizationConfigError(
                 "optimization.temperature must be between 0 and 2"
@@ -270,6 +274,7 @@ def _parse_optimization(payload: Mapping[str, Any]) -> OptimizationSettings:
         "allow_new_files",
         "continue_on_optimization_error",
         "verify_revision_execution",
+        "edit_mode",
     }
     unknown = set(payload) - allowed
     if unknown:
@@ -311,6 +316,7 @@ def _parse_optimization(payload: Mapping[str, Any]) -> OptimizationSettings:
             "verify_revision_execution",
             True,
         ),
+        edit_mode=payload.get("edit_mode", "full"),
     )
 
 

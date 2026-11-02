@@ -24,7 +24,7 @@ XRAGOS 通过**选择与修订可执行 Skill**，让检索增强生成流程适
 
 执行顺序为：**Task 1 统一规划 → 执行其 50 题 → 评估 → 自优化一轮 → Task 2 基于当前 Skill 重新规划 → 执行其 50 题 → 评估 → 自优化一轮**。同一轮优化中的选择、编辑和格式修复请求分别计数；执行验证重跑单独记录，不计入 50 道主评测题。报告声明 `selection_scope="task_shared"` 与 `revision_validation_mode="execution_only"`；配置项 `verify_revision_execution` 启用执行与接口检查。
 
-Policy 的选择与编辑分别使用独立的 JSON 契约。选择响应只包含 `selected_skill` 和 `rationale`；编辑响应只能是 `{"edits":[{"path":"允许编辑的准确路径","content":"完整替换文本"}]}`，每条修改只能包含 `path` 与 `content`。文件权限与截断元数据属于输入，不得复制到修改提案。格式错误会携带具体校验原因进行有界修复，最终被拒绝的提案保留在审计记录中。
+Policy 的选择与编辑分别使用独立的 JSON 契约。选择响应只包含 `selected_skill` 和 `rationale`。`optimization.edit_mode: patch` 使用增量修改，`full` 使用完整文件替换；提供的示例选择 `patch`，省略此字段的旧配置保留 `full`。全文修改仅含 `path/content`；增量修改仅含 `path/base_sha256/replacements`，每个替换片段仅含 `old/new`。哈希对应可见原文统一为 LF 换行后的 UTF-8 内容，原文锚点必须唯一且不能重叠；框架先物化完整结果，再沿用原有校验和修改事务。文件权限等输入元数据不得混入输出。格式错误仅在所选模式内有界修复，不自动切换模式；原始动作、物化提案和最终差异均保留在审计记录中。
 
 Policy 反馈包含全部已执行 QA 的指标；详细轨迹在 Task 内均匀抽样，共享方案只提供一次。字符预算不足时减少完整轨迹条目，并记录保留与省略数量。该限制只作用于反馈体积，主 QA 仍全部执行，可编辑 Skill 的源码保持完整。
 
@@ -111,7 +111,9 @@ python -B -m self_optimization --group data/groups/triviaqa-train-001
 
 用 `--shuffle-seed` 覆盖 Corpus 打乱种子，用 `--config` 指定其他任务配置，用 `--run-id` 指定新的唯一运行名称。每次 Group 调用都创建新的 Skill 工作副本，同一次运行内的后续 Task 继承已接受的修订。
 
-同一 Task 的 QA 可以共用规划和 Skill 版本并行执行。`--qa-mode adaptive --qa-max-workers 8` 按实测吞吐量调整有上限的并发数；`--qa-mode fixed --qa-max-workers 4` 使用固定上限；`--qa-mode serial` 保持串行。全部 QA 完成后才进行优化和下一 Task。配置、统计、共享资源与自定义客户端要求见[Task 内并行说明](docs/PARALLEL_EXECUTION.md)。
+同一 Task 的 QA 可以共用规划和 Skill 版本并行执行。`--qa-mode adaptive --qa-max-workers 10` 根据持续吞吐量和真实重试压力调整有上限的并发数，单题延迟不触发降并发；`--qa-mode fixed --qa-max-workers 4` 使用固定上限；`--qa-mode serial` 保持串行。全部 QA 完成后才进行优化和下一 Task。配置、统计、共享资源与自定义客户端要求见[Task 内并行说明](docs/PARALLEL_EXECUTION.md)。
+
+自适应模式可复用紧邻的已提交 Task 在相同服务、路线和资源下验证过的健康并发水平，降低一级后作为新起点，并在新 Task 重新测量吞吐。`workflow.qa_execution.reuse_healthy_start: false` 可关闭复用。发生重试压力、统计覆盖不足或执行身份变化时，按配置冷启动。
 
 续跑中断实验时，保持原有配置、Group、选取数量、源码版本和 run ID，并增加 `--resume`：
 

@@ -3,11 +3,26 @@
 一个 Task 的 QA 共用一次规划结果和同一版 Skill，题目之间没有答案依赖，可以同时执行。Task 之间保持顺序：
 
 ```text
-当前 Skill → Task 统一规划 → 并行执行全部 QA → 汇总评估
+当前 Skill → Task 统一规划 → 准备选中检索资源 → 并行执行全部 QA → 汇总评估
           → 一轮 Skill 优化和运行验证 → 下一 Task 重新规划
 ```
 
 优化开始前会等待本 Task 的全部主 QA 完成。结果、评估和 Policy 反馈按原始题目顺序保存，开始/完成事件记录真实执行顺序。每题使用独立的组件调用状态、证据元数据和日志上下文；共享只读 Corpus、同步缓存和模型资源。
+
+规划选中 Vector Retriever 后，主线程先准备该 Skill 使用的 Corpus 索引：
+内存命中直接复用，否则加载并校验磁盘缓存，缺失或损坏时建库并持久化。
+准备完成后才调度 QA；准备失败会保留失败证据并停止本 Task，不能进入优化。
+50 题及后续 Task 共用索引，问题、`top_k` 或 Generator 的变化不触发重建。
+Corpus、Embedding 配置或 Vector Skill 文档表示发生变化时，使用新的索引身份。
+未选 Vector 时不会提前建库；未配置磁盘缓存时仍可在同一运行内复用。
+
+组件可通过 `run.prepare(inputs, context)` 声明资源准备入口，编译器只调用已选组件，
+同一组件绑定多个槽位时仅准备一次。Vector 的准备与查询使用相同的运行时缓存和锁，
+因此同一进程的多个 QA 同时首次访问也只会构建一次；不同进程的同时首次构建不在该锁范围内。
+索引文件写入配置的仓库外缓存目录，不改写 Corpus。
+
+可视化分别记录准备墙钟、建库、磁盘加载、查询编码和相似度搜索耗时，以及内存/磁盘命中。
+查询耗时是各次操作的累计时间；并发操作可能重叠，不能将它当作 Task 墙钟。
 
 ## 配置和运行
 
@@ -19,10 +34,10 @@ workflow:
     mode: adaptive
     min_workers: 1
     initial_workers: 2
-    max_workers: 8
+    max_workers: 10
     adjustment_window: 4
     throughput_tolerance: 0.05
-    latency_factor: 2.0
+    reuse_healthy_start: true
 ```
 
 | 字段 | 含义 |
@@ -33,12 +48,12 @@ workflow:
 | `max_workers` | 同时执行的 QA 上限，不是单次模型请求数或 GPU batch size。 |
 | `adjustment_window` | 调整前收集的最少完成题数。 |
 | `throughput_tolerance` | 判断吞吐量变化时使用的相对容差。 |
-| `latency_factor` | 判断题目延迟膨胀时使用的倍数阈值。 |
+| `reuse_healthy_start` | 自适应模式是否复用相邻 Task 已确认的健康并发作为下一 Task 的保守起点，默认 `true`。 |
 
 旧配置省略 `qa_execution` 时保持串行；提供的示例启用自适应模式。可从命令行覆盖模式和上限：
 
 ```sh
-python -B -m self_optimization --group data/groups/hotpotqa-train-001 --qa-mode adaptive --qa-max-workers 8
+python -B -m self_optimization --group data/groups/hotpotqa-train-001 --qa-mode adaptive --qa-max-workers 10
 python -B -m self_optimization --group data/groups/hotpotqa-train-001 --qa-mode fixed --qa-max-workers 4
 python -B -m self_optimization --group data/groups/hotpotqa-train-001 --qa-mode serial
 ```
@@ -47,11 +62,27 @@ python -B -m self_optimization --group data/groups/hotpotqa-train-001 --qa-mode 
 
 ## 自适应调度的目标
 
-调度器使用实测完成吞吐量、QA 延迟和调用重试压力，逐步探测可用并发；压力上升时降低后续提交数量。降低上限不会强行终止已经执行的题目。
+调度器根据实测完成吞吐量和真实调用重试压力探测可用并发。单题耗时、平均 QA 延迟只用于观察，不作为降并发条件。降低上限不会强行终止已经执行的题目。
 
-这是有上限的吞吐量调节，不能保证硬件利用率最大。API 的远端 GPU 利用率不可见，问题难度也会影响窗口统计。`max_workers` 需要结合服务额度、内存和实测吞吐量设置。建议先比较并发 2、4、8 的同一组题，而非直接把上限设为题目总数。
+每个完整负载窗口至少收集 `max(adjustment_window, 当前并发上限)` 道完成题。吞吐量提高时继续探测增加 1；吞吐量持平时保持当前并发，观察一个窗口后再探测。一次较差窗口不会降低并发；只有连续两个完整负载窗口的吞吐量相对基准下降超过容差，才降低后续提交上限。下降确认期间固定比较基准，避免把第一个差窗口当成新的正常水平。降并发后观察两个窗口再探测。任务末尾没有足够待执行题目维持原并发时，不把自然排空造成的吞吐变化当作容量退化。
+
+检测到完成 QA 报告真实模型重试或限流压力时，提交上限减半，最低到 `min_workers`；已经恢复成功的重试同样记录为压力。未提供可信单次调用统计的客户端明确标为覆盖未知或部分覆盖，不把未知重试数记成 0。请求本身仍遵守模型客户端的重试预算，调度器不额外重发题目或请求。
+
+旧配置中的 `latency_factor` 已移除，迁移时删除此字段；历史运行的快照和配置保留原样。
+
+这是有上限的吞吐量调节，不能保证硬件利用率最大。API 的远端 GPU 利用率不可见，问题难度也会影响窗口统计。`max_workers` 需要结合服务额度、内存和实测吞吐量设置。建议先比较并发 2、4、8、10 的同一组题，而非直接把上限设为题目总数。
 
 本地 BGE 重排继续使用共享模型和推理锁，避免同时加载多个模型或叠加推理显存峰值。QA 并行可以让 API 等待与本地重排重叠；跨题 GPU 批处理是另一项优化，本模式不把它当作已经实现的收益。
+
+## 跨 Task 复用健康起点
+
+`initial_workers` 是配置的冷启动起点。启用 `reuse_healthy_start` 后，下一 Task 可以继承相邻 Task 已确认的健康并发，避免每个 Task 都从相同低值重新探测。复用只影响起点，新 Task 仍重新测量吞吐量基准，继续执行原有的限流、重试压力降并发和吞吐量控制。
+
+只有前一 Task 完整结束、单次调用统计完整、没有重试压力，且已经通过至少两个健康的饱和窗口，才生成可复用证据。健康容量采用最后一个实际测量过的健康窗口上限；未确认的探测上限、并发峰值和任务自然排空时的上限都不作为健康容量。继承时保守降低一级，并且不低于配置的起点，仍受 `min_workers`、`max_workers` 及实际题数约束。
+
+复用要求模型及服务地址、选中工作流和组件绑定、调度配置及资源身份一致。身份变化、非相邻记录、没有健康证据、历史记录缺少字段时均冷启动；串行和固定并行不应用这一机制。恢复运行只读取已提交 Task 的证据，未提交的中断 Task 不提供继承依据。设置 `reuse_healthy_start: false` 可保持每 Task 从配置起点探测。
+
+调度报告和可视化分别显示配置起点、实际起点、来源 Task、健康并发、安全衰减及冷启动原因。实际起点不同于该 Task 最终并发，后者也不能代替已确认的健康并发。
 
 ## 故障和扩展边界
 

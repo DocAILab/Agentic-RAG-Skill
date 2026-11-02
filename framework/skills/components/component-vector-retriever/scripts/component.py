@@ -90,6 +90,23 @@ def _document_text(document):
     return "\n".join(part for part in parts if part)
 
 
+def prepare(inputs, context):
+    """Prepare this Skill's Corpus representation before a Task starts querying."""
+    documents = inputs.get("documents", ())
+    prepare_index = getattr(context, "prepare_corpus_vectors", None)
+    if not documents or not callable(prepare_index):
+        return None
+    return prepare_index(
+        documents=documents,
+        text_format_version=f"{TEXT_FORMAT_VERSION}:{_MODULE_FINGERPRINT}",
+        text_formatter=_document_text,
+    )
+
+
+# Optional lifecycle hook; basic embedding-only environments can still run it.
+run.prepare = prepare
+
+
 def _normalize_vector(vector, label):
     """校验并归一化单个向量。"""
     try:

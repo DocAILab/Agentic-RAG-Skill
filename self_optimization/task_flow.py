@@ -57,6 +57,9 @@ from .task_config import (
     load_task_workflow_config,
 )
 from .telemetry import ModelCaptureRecorder, capture_context
+from .scheduling import (ConcurrencyWarmStartHistory, QuestionExecutionError,
+                         QuestionOutcome, SchedulingModel, concurrency_history_key,
+                         execute_questions)
 from .workspace import RevisionRejected, SkillWorkspace
 
 
@@ -147,6 +150,7 @@ def run_task_workflow(
         previously_completed_tasks=checkpoint.completed_tasks,
         revision_validation_mode="execution_only",
         capture_model_io=capture_model_io,
+        qa_execution=config.qa_execution.to_dict(),
     )
 
     if executor_model is None:
@@ -157,6 +161,7 @@ def run_task_workflow(
             embedding_model = configured_embedding
     if not freeze_skills and optimizer_model is None:
         optimizer_model = create_optimizer_model(base)
+    executor_model = SchedulingModel(executor_model)
     recorder = None
     if capture_model_io:
         recorder = ModelCaptureRecorder(
@@ -195,6 +200,7 @@ def run_task_workflow(
 
     report_path = workspace.run_root / "task-flow.report.json"
     task_records = list((checkpoint.completed_report or {}).get("tasks", []))
+    concurrency_history = ConcurrencyWarmStartHistory(task_records)
     overall_metrics: list[ExampleMetrics] = restore_metrics(task_records)
     for task_index, (task, task_examples) in enumerate(selected, start=1):
         if task_index <= checkpoint.completed_tasks:
@@ -212,7 +218,8 @@ def run_task_workflow(
             "attempt_id": attempt_id,
         }
         if recorder is not None:
-            recorder.update_context(**task_identity, scope="primary_task_routing", question_id=None)
+            recorder.update_context(**task_identity, scope="primary_task_routing", question_id=None,
+                                    edit_mode=None)
         event_log.write(
             "task_started",
             **task_identity,
@@ -277,64 +284,107 @@ def run_task_workflow(
             "plan": plan_payload,
         }
         event_log.write("task_routing_completed", **task_identity, **task_routing)
-        executions = []
-        candidate_names = []
-        for example_index, (example, request) in enumerate(zip(task_examples, task_requests, strict=True), start=1):
-            if recorder is not None:
-                recorder.update_context(scope="primary_qa", question_id=example.id)
+        resource_started_at = time.perf_counter()
+        event_log.write(
+            "task_resources_preparation_started", **task_identity,
+            task_plan_hash=task_plan_hash,
+        )
+        try:
+            with capture_context(executor_model, **task_identity,
+                                 scope="task_resource_preparation", question_id=None):
+                preparation_command = compile_rag_command(
+                    plan, skill_root=workspace.skill_root, context=runtime_context,
+                )
+                if recorder is not None:
+                    recorder.record_compile(preparation_command)
+                resources = preparation_command.prepare_resources(
+                    {"documents": shared_documents},
+                )
+            retrieval_resources = {
+                "status": "completed",
+                "duration_seconds": round(time.perf_counter() - resource_started_at, 6),
+                "resources": resources,
+            }
             event_log.write(
-                "task_example_started",
-                **task_identity,
-                task_name=task.name,
-                example_index=example_index,
-                total_examples=len(task_examples),
-                question_id=example.id,
-                label_type=example.label_type,
-                question=example.question,
-                selection_scope=selection_scope,
+                "task_resources_preparation_completed", **task_identity,
+                task_plan_hash=task_plan_hash, **retrieval_resources,
+            )
+        except Exception as exc:
+            event_log.write(
+                "task_resources_preparation_failed", **task_identity,
+                task_plan_hash=task_plan_hash, status="failed",
+                duration_seconds=round(time.perf_counter() - resource_started_at, 6),
+                error_type=type(exc).__name__, error=_safe_error_message(exc),
+            )
+            _record_task_execution_failure(
+                exc, stage="resource_preparation", workspace=workspace,
+                event_log=event_log, checkpoint=checkpoint,
+                task_identity=task_identity, task_index=task_index,
+                completed_examples=0, selection_scope=selection_scope,
                 task_plan_hash=task_plan_hash,
             )
-            try:
+            raise
+        # Every admitted QA sees the same plan and Skill tree. Only the main
+        # thread may evaluate, optimize or checkpoint after the scheduler drains.
+        history_key = _task_concurrency_history_key(
+            config, executor_model, runtime_context, plan, preparation_command,
+            framework_config=framework_config, task=task, resources=resources,
+        )
+        warm_start = concurrency_history.request(
+            config.qa_execution, key_sha256=history_key, task_index=task_index,
+        )
+        def execute_example(index, item):
+            example, request = item
+            example_index = index + 1
+            with capture_context(executor_model, **task_identity, scope="primary_qa",
+                                 question_id=example.id):
+                event_log.write(
+                    "task_example_started", **task_identity, task_name=task.name,
+                    example_index=example_index, total_examples=len(task_examples),
+                    question_id=example.id, label_type=example.label_type,
+                    question=example.question, selection_scope=selection_scope,
+                    task_plan_hash=task_plan_hash,
+                )
+                question_context = (runtime_context if config.qa_execution.mode == "serial"
+                                    else runtime_context.fork_for_question())
                 command = compile_rag_command(
-                    plan,
-                    skill_root=workspace.skill_root,
-                    context=runtime_context,
+                    plan, skill_root=workspace.skill_root, context=question_context,
                 )
                 if recorder is not None:
                     recorder.record_compile(command)
                 result = command.run(request)
-            except Exception as exc:
-                _record_task_execution_failure(
-                    exc, stage="qa_execution", workspace=workspace, event_log=event_log,
-                    checkpoint=checkpoint, task_identity=task_identity, task_index=task_index,
-                    completed_examples=len(executions), selection_scope=selection_scope,
-                    question_id=example.id, example_index=example_index,
-                    task_plan_hash=task_plan_hash,
+                result["selection"] = plan.to_dict()
+                result["compiled_instruction"] = command.instruction
+                event_log.write(
+                    "task_example_executed", **task_identity, task_name=task.name,
+                    example_index=example_index, question_id=example.id,
+                    label_type=example.label_type, selection=plan.to_dict(),
+                    prediction=result.get("answer"), retrieved_document_ids=_retrieved_ids(result),
+                    trace=result.get("trace", []), component_timings=result.get("component_timings", []),
+                    selection_scope=selection_scope, task_plan_hash=task_plan_hash,
                 )
-                raise
-            result["selection"] = plan.to_dict()
-            result["compiled_instruction"] = command.instruction
-            candidate_names.extend(participating_names(plan.to_dict()))
-            executions.append((example, result))
-            event_log.write(
-                "task_example_executed",
-                **task_identity,
-                task_name=task.name,
-                question_id=example.id,
-                label_type=example.label_type,
-                selection=plan.to_dict(),
-                prediction=result.get("answer"),
-                retrieved_document_ids=_retrieved_ids(result),
-                trace=result.get("trace", []),
-                component_timings=result.get("component_timings", []),
-                selection_scope=selection_scope,
-                task_plan_hash=task_plan_hash,
+                if verbose:
+                    print(f"[{example_index}/{len(task_examples)}] {example.id}: {result.get('answer')}")
+                return QuestionOutcome((example, result))
+
+        try:
+            executions, qa_scheduling = execute_questions(
+                list(zip(task_examples, task_requests, strict=True)), execute_example,
+                config.qa_execution,
+                on_event=lambda event, **fields: event_log.write(event, **task_identity, **fields),
+                warm_start=warm_start,
             )
-            if verbose:
-                print(
-                    f"[{example_index}/{len(task_examples)}] {example.id}: "
-                    f"{result.get('answer')}"
-                )
+        except QuestionExecutionError as failed:
+            example = task_examples[failed.index]
+            _record_task_execution_failure(
+                failed.cause, stage="qa_execution", workspace=workspace, event_log=event_log,
+                checkpoint=checkpoint, task_identity=task_identity, task_index=task_index,
+                completed_examples=len(failed.completed_results), selection_scope=selection_scope,
+                question_id=example.id, example_index=failed.index + 1,
+                task_plan_hash=task_plan_hash, qa_execution=failed.summary,
+            )
+            raise failed.cause from failed
+        candidate_names = list(participating_names(plan.to_dict()))
 
         task_metrics = []
         example_records = []
@@ -412,12 +462,14 @@ def run_task_workflow(
             event_log.write("task_optimization_disabled_baseline", **task_identity, **optimization_record)
         else:
             if recorder is not None:
-                recorder.update_context(scope="optimization", question_id=None)
+                recorder.update_context(scope="optimization", question_id=None,
+                                        edit_mode=base.optimization.edit_mode)
             event_log.write(
                 "task_optimization_requested",
                 **task_identity,
                 task_name=task.name,
                 candidate_skills=list(unique_candidates),
+                edit_mode=base.optimization.edit_mode,
             )
             proposal = None
             optimization_error: Exception | None = None
@@ -500,6 +552,7 @@ def run_task_workflow(
                     optimization_record["model_error"] = exc.diagnostics()
                 if getattr(exc, "revision_verification", None) is not None:
                     optimization_record["verification"] = exc.revision_verification
+            optimization_record["edit_mode"] = base.optimization.edit_mode
             audit = write_optimization_audit(
                 workspace.run_root / "optimizer_calls" / f"task-{task_index:04d}" / attempt_id,
                 model_calls=optimizer.calls,
@@ -537,6 +590,8 @@ def run_task_workflow(
             "selection_scope": selection_scope,
             "task_plan_hash": task_plan_hash,
             "task_routing": task_routing,
+            "retrieval_resources": retrieval_resources,
+            "qa_execution": qa_scheduling,
             "examples": example_records,
             "optimization": optimization_record,
             "attempt_id": attempt_id,
@@ -558,6 +613,9 @@ def run_task_workflow(
             {**task_identity, "task_name": task.name, "summary": task_summary,
              "optimization_status": optimization_record["status"], "skill_hash_after": workspace.working_hash()},
         )
+        # The durable checkpoint is authoritative. Never publish capacity learned
+        # from an uncommitted QA/optimization attempt or a failed commit.
+        concurrency_history.commit(task_record, task_index)
         if verbose:
             print("Task Summary:", json.dumps(task_summary, ensure_ascii=False))
             print(
@@ -609,6 +667,7 @@ def _record_task_execution_failure(
     question_id: str | None = None,
     example_index: int | None = None,
     task_plan_hash: str | None = None,
+    qa_execution: Mapping[str, Any] | None = None,
 ) -> None:
     """Preserve partial-attempt evidence without committing it or changing retries."""
     path = (workspace.run_root / "task_failures" / f"task-{task_index:04d}"
@@ -621,6 +680,7 @@ def _record_task_execution_failure(
         "example_index": example_index,
         "selection_scope": selection_scope,
         "task_plan_hash": task_plan_hash,
+        "qa_execution": dict(qa_execution) if qa_execution is not None else None,
         "committed": False,
         "committed_tasks_before_attempt": checkpoint.completed_tasks,
         "uncommitted_executed_examples": completed_examples,
@@ -755,6 +815,10 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--max-tasks", type=_positive_cli_int, default=None)
     parser.add_argument("--examples-per-task", type=_positive_cli_int, default=None)
+    parser.add_argument("--qa-mode", choices=("serial", "fixed", "adaptive"), default=None,
+                        help="Within-Task QA admission; Tasks and Skill updates remain sequential.")
+    parser.add_argument("--qa-max-workers", type=_positive_cli_int, default=None,
+                        help="Hard upper bound for admitted QA (fixed mode uses this value).")
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--resume", action="store_true", help="Resume the same committed run-id/workspace; never creates a fresh baseline.")
     parser.add_argument("--freeze-skills", action="store_true", help="Run the original Skills without constructing or calling the Policy model.")
@@ -780,6 +844,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         parser.error("--task-budget-seconds must be finite and positive")
     if args.validate_only and (args.resume or args.task_budget_seconds is not None):
         parser.error("--resume/--task-budget-seconds only apply to execution")
+    if args.validate_only and (args.qa_mode is not None or args.qa_max_workers is not None) and args.config is None:
+        parser.error("QA scheduling overrides with --validate-only require --config")
     if args.validate_only and args.policy_mode is not None and args.config is None:
         parser.error("--policy-mode with --validate-only requires --config")
     return args
@@ -810,6 +876,14 @@ def main(argv: Sequence[str] | None = None) -> None:
         group_path=args.group, shuffle_seed=args.shuffle_seed,
         policy_mode=args.policy_mode,
     )
+    if args.qa_mode is not None or args.qa_max_workers is not None:
+        qa = config.qa_execution
+        maximum = args.qa_max_workers if args.qa_max_workers is not None else qa.max_workers
+        config = replace(config, qa_execution=replace(
+            qa, mode=args.qa_mode or qa.mode, max_workers=maximum,
+            initial_workers=min(qa.initial_workers, maximum),
+            min_workers=min(qa.min_workers, maximum),
+        ))
     if args.validate_only:
         summary = validate_task_workflow(
             config, max_tasks=args.max_tasks, examples_per_task=args.examples_per_task
@@ -859,6 +933,7 @@ def validate_task_workflow(
         "group": _group_summary(config.group),
         "selection": _selection_summary(selected, max_tasks, examples_per_task),
         "validation_examples_per_task": config.validation_examples_per_task,
+        "qa_execution": config.qa_execution.to_dict(),
         "revision_validation_mode": "execution_only",
         "acceptance_policy": "execution_only",
     }
@@ -957,6 +1032,53 @@ def _group_task_examples(
     ]
 
 
+def _task_concurrency_history_key(
+    config, executor_model, runtime_context, plan, command, *, framework_config, task, resources,
+):
+    """Partition capacity by public service, route and reusable local resources.
+
+    Generator edits intentionally do not invalidate service capacity: the next
+    Task measures throughput anew and starts one level below the tested limit.
+    Retrieval/reranker source changes can alter local model ownership and do
+    invalidate it. Credentials and question/answer content never enter the key.
+    """
+    service = {
+        "configured_service": embedding_service_fingerprint(framework_config.executor),
+        "provider": getattr(executor_model, "provider", framework_config.executor.provider),
+        "model": getattr(executor_model, "model", framework_config.executor.model),
+        "base_url": getattr(executor_model, "base_url", framework_config.executor.base_url),
+    }
+    resource_sources = {}
+    components = getattr(command, "_components", None)
+    for slot, functions in getattr(components, "bindings", {}).items():
+        if not any(token in slot for token in ("retriev", "rerank")):
+            continue
+        for name, function in zip(command.binding_names[slot], functions, strict=True):
+            source = Path(function.__code__.co_filename)
+            resource_sources[name] = hashlib.sha256(source.read_bytes()).hexdigest()
+    embedding = runtime_context.embedding_model
+    resource_identity = {
+        "corpus_fingerprint": config.group.corpus_fingerprint,
+        "embedding_fingerprint": runtime_context.embedding_fingerprint,
+        "embedding_model": getattr(embedding, "model", None),
+        "embedding_device": getattr(embedding, "device", None),
+        "embedding_normalization": getattr(embedding, "normalize_embeddings", None),
+        "resource_sources": resource_sources,
+        "vector_keys": [{"component": item.get("component"), "cache_key": item.get("cache_key")}
+                        for item in resources],
+        "request_options": {
+            key: value for key, value in {**framework_config.request_defaults, **task.request}.items()
+            if key in {"top_k", "max_iterations", "rank_constant", "max_tokens",
+                       "rewrite_temperature", "rewrite_max_tokens", "classifier_max_tokens",
+                       "critic_max_tokens", "routing_constraints"}
+        },
+    }
+    return concurrency_history_key(
+        service=service, workflow=plan.agentic_skill, bindings=plan.component_bindings,
+        config=config.qa_execution, resources=resource_identity,
+    )
+
+
 def _execution_request(
     framework_config: Any, task: RAGTaskConfig, example: TaskExample
 ) -> dict[str, Any]:
@@ -993,6 +1115,7 @@ def _build_workflow_report(
         "selection": dict(selection),
         "selection_scope": selection.get("selection_scope", "task_shared"),
         "validation_examples_per_task": config.validation_examples_per_task,
+        "qa_execution": config.qa_execution.to_dict(),
         "revision_validation_mode": "execution_only",
         "acceptance_policy": "execution_only",
         "experiment_arm": "frozen_baseline" if freeze_skills else "adaptive",

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -112,6 +113,88 @@ def _children(root: Path) -> list[Path]:
         return sorted((p for p in root.iterdir() if p.is_dir()), key=lambda p: p.name)
     except OSError:
         return []
+
+
+def _qa_execution(recorded: Any, events: list[dict]) -> dict | None:
+    """Keep recorded concurrency distinct from unmeasured resource utilization."""
+    if isinstance(recorded, dict) and recorded:
+        return {**recorded, "availability": "recorded", "evidence_source": "task_report",
+                "status": "completed"}
+    terminal = next((e for e in reversed(events) if e.get("event") in {
+        "task_qa_scheduling_completed", "task_qa_scheduling_failed"}), None)
+    if terminal:
+        identity = {"event", "run_id", "session_id", "task_id", "group_id", "attempt_id", "timestamp"}
+        return {**{k: v for k, v in terminal.items() if k not in identity},
+                "availability": "recorded", "evidence_source": "task_events",
+                "status": "failed" if terminal["event"].endswith("failed") else "completed"}
+    start = next((e for e in reversed(events) if e.get("event") == "task_qa_scheduling_started"), None)
+    if not start:
+        return None
+    adjustments = [e for e in events if e.get("event") == "task_qa_concurrency_adjusted"]
+    limit = next((e.get("concurrency_limit") for e in reversed(adjustments)
+                  if e.get("concurrency_limit") is not None), start.get("concurrency_limit"))
+    return {"config": start.get("config"), "concurrency_limit": limit,
+            "configured_initial_concurrency": start.get("configured_initial_concurrency"),
+            "effective_initial_concurrency": start.get("effective_initial_concurrency"),
+            "warm_start": start.get("warm_start"),
+            "final_concurrency_limit": None, "peak_in_flight": None,
+            "wall_seconds": None, "adjustments": adjustments,
+            "availability": "partial", "evidence_source": "task_events", "status": "running"}
+
+
+def _edit_mode(*records: tuple[Any, str]) -> tuple[str, str]:
+    """Read an explicit protocol declaration; never infer it from old edits."""
+    for record, source in records:
+        mode = record.get("edit_mode") if isinstance(record, dict) else None
+        if mode in ("full", "patch"):
+            return mode, source
+    return "unknown", "unrecorded"
+
+
+def _retrieval_resources(recorded: Any, events: list[dict]) -> dict | None:
+    """A completed empty resource list is evidence; absent old data is unknown."""
+    if isinstance(recorded, dict):
+        return {**recorded, "evidence_source": "task_report"}
+    rows = [row for row in events if row.get("event", "").startswith("task_resources_preparation_")]
+    if not rows:
+        return None
+    terminal = next((row for row in reversed(rows) if row.get("event") in {
+        "task_resources_preparation_completed", "task_resources_preparation_failed"}), None)
+    if terminal:
+        return {**terminal, "evidence_source": "task_events"}
+    return {"status": "running", "duration_seconds": None, "resources": None,
+            "evidence_source": "task_events"}
+
+
+def _vector_summary(rows: list[dict]) -> dict | None:
+    """Sum operation durations, never infer parallel wall time or missing values."""
+    if not rows:
+        return None
+    timing_keys = ("build_seconds", "load_seconds", "disk_lookup_seconds", "wait_seconds",
+                   "query_seconds", "query_embedding_seconds", "search_seconds")
+    timings = {}
+    coverage = {}
+    for key in timing_keys:
+        values = [row[key] for row in rows if isinstance(row.get(key), (int, float))
+                  and not isinstance(row[key], bool) and math.isfinite(row[key]) and row[key] >= 0]
+        timings[key] = sum(values) if len(values) == len(rows) else None
+        coverage[key] = {"recorded": len(values), "operations": len(rows)}
+    source_counts = {source: sum(row.get("cache_source") == source for row in rows)
+                     for source in ("built", "disk", "memory")}
+    known_sources = sum(source_counts.values())
+    return {"availability": "partial" if known_sources != len(rows) or any(
+                value["recorded"] != value["operations"] for value in coverage.values()) else "recorded",
+            "evidence_sources": sorted({row.get("evidence_source", "vector_index_events") for row in rows}),
+            "operations": len(rows),
+            "preparations": sum(row.get("operation") == "prepare" for row in rows),
+            "queries": sum(row.get("operation") == "query" for row in rows),
+            "failed_operations": sum(row.get("status") == "failed" for row in rows),
+            "builds": source_counts["built"], "disk_loads": source_counts["disk"],
+            "memory_hits": source_counts["memory"], "cache_hit_operations": source_counts["disk"] + source_counts["memory"],
+            "cache_hit_rate": ((source_counts["disk"] + source_counts["memory"]) / known_sources) if known_sources else None,
+            "cache_source_unknown": len(rows) - known_sources,
+            "timings": timings, "timing_coverage": coverage,
+            "duration_semantics": "sum_of_operations_not_wall_time"}
 
 
 @dataclass(frozen=True)
@@ -267,6 +350,7 @@ class RunStore:
                           "attempt_id": merged.get("attempt_id"), "status": state,
                           "seconds": merged.get("seconds"), "timestamp": merged.get("timestamp"),
                           "skill_hash": merged.get("skill_hash"),
+                          "edit_mode": merged.get("edit_mode") if merged.get("edit_mode") in ("full", "patch") else None,
                           "component": merged.get("component_name") or merged.get("component"),
                           "slot": merged.get("slot"),
                           "component_call_id": merged.get("component_call_id"),
@@ -367,6 +451,7 @@ class RunStore:
         start = next((e for e in events if e.get("event") == "workflow_started"), {})
         selection = report.get("selection") or start.get("selection") or {}
         calls, captures, logs, unresolved = self._calls(ref, report, start)
+        vector_rows = self._rows(ref, ref.root / "model-captures/vector-index-events.jsonl")
         current_attempts = {row.get("task_id") or row.get("name"): row["attempt_id"]
                             for row in report.get("tasks", []) if row.get("attempt_id")}
         for event in events:
@@ -394,7 +479,9 @@ class RunStore:
                                 "skill_hash_before": None, "skill_hash_after": None,
                                 "attempt_id": current_attempts.get(tid),
                                 "failure": None, "error_type": None, "failure_category": None, "failure_history": [],
-                                "routing": {}, "optimization": {}, "summary": {}, "questions": []}
+                                "routing": {}, "optimization": {}, "summary": {}, "questions": [],
+                                "qa_execution": None, "retrieval_resources": None,
+                                "vector_index": None}
                 qmaps[tid] = {}
             return taskmap[tid]
 
@@ -437,6 +524,8 @@ class RunStore:
                 continue
             t.update({"status": "completed", "routing": row.get("task_routing", {}),
                       "optimization": row.get("optimization", {}), "summary": row.get("summary", {}),
+                      "qa_execution": row.get("qa_execution"),
+                      "retrieval_resources": row.get("retrieval_resources"),
                       "skill_hash_before": row.get("skill_hash_before"),
                       "skill_hash_after": row.get("skill_hash_after"), "attempt_id": row.get("attempt_id")})
             if t["question_count"] is None:
@@ -530,7 +619,8 @@ class RunStore:
                     continue
                 cid = "audit-" + hashlib.sha256(str(prompt_path).encode()).hexdigest()[:20]
                 capture = {**artifacts, "generate_id": cid, "response_path": str(response_path) if response_path else None,
-                           "stage": callstage, "scope": "optimization", "task_id": t["id"], "role": "policy"}
+                           "stage": callstage, "scope": "optimization", "task_id": t["id"], "role": "policy",
+                           "edit_mode": _edit_mode((attempt, "attempt"), (artifacts, "artifacts"))[0]}
                 captures[cid] = capture
                 calls.append({"id": cid, "role": "policy", "model": (report.get("optimizer") or {}).get("model") or (config.get("policy") or {}).get("model"),
                               "stage": callstage, "scope": "optimization", "task_id": t["id"], "question_id": None,
@@ -538,22 +628,66 @@ class RunStore:
                                   "completed" if response_path and response_path.is_file() else "unknown"),
                               "seconds": None, "timestamp": None, "capture_available": True,
                               "http_attempt_count": None, "node_id": self._call_node(capture),
-                              "record_kind": "optimizer_audit", "generate_id_recorded": False})
+                              "record_kind": "optimizer_audit", "generate_id_recorded": False,
+                              "edit_mode": capture["edit_mode"]})
+        visible_vector_rows = []
         for t in taskmap.values():
+            task_events = [event for event in events if event.get("task_id") == t["id"]
+                           and self._same_attempt(event, t)]
+            t["retrieval_resources"] = _retrieval_resources(t["retrieval_resources"], task_events)
+            owned_vector = [row for row in vector_rows if row.get("task_id") == t["id"]
+                            and self._same_attempt(row, t)
+                            and row.get("scope") in {"task_resource_preparation", "primary_qa"}]
+            prepared = [resource for resource in (t["retrieval_resources"] or {}).get("resources") or []
+                        if isinstance(resource, dict) and resource.get("cache_source") is not None]
+            if len(prepared) > sum(row.get("operation") == "prepare" for row in owned_vector):
+                owned_vector = [row for row in owned_vector if row.get("operation") != "prepare"]
+                owned_vector.extend({**resource, "operation": "prepare", "task_id": t["id"],
+                                     "attempt_id": t.get("attempt_id"), "scope": "task_resource_preparation",
+                                     "evidence_source": "task_resource_report"} for resource in prepared)
+            t["qa_execution"] = _qa_execution(t["qa_execution"], [
+                event for event in events if event.get("task_id") == t["id"]
+                and self._same_attempt(event, t)
+                and (event.get("event", "").startswith("task_qa_scheduling_")
+                     or event.get("event") == "task_qa_concurrency_adjusted")
+            ])
             request = self._artifact_json(ref, t["routing"].get("request_path"))
             if isinstance(request, dict):
                 for row in request.get("questions", []):
                     question(t["id"], row)
             t["questions"] = sorted(qmaps[t["id"]].values(), key=lambda q: q["index"])
             for q in t["questions"]:
+                fallback = [{**operation, "task_id": t["id"], "attempt_id": t.get("attempt_id"),
+                             "question_id": q["id"], "scope": "primary_qa",
+                             "component_name": timing.get("component"), "slot": timing.get("slot"),
+                             "evidence_source": "component_timings"}
+                            for timing in q.get("component_timings", [])
+                            for operation in timing.get("vector_index") or [] if isinstance(operation, dict)]
+                recorded_count = sum(row.get("scope") == "primary_qa" and row.get("question_id") == q["id"]
+                                     for row in owned_vector)
+                if len(fallback) > recorded_count:
+                    # A best-effort capture stream may miss a write. Use the
+                    # complete per-QA operation list instead of double-counting.
+                    owned_vector = [row for row in owned_vector if not (
+                        row.get("scope") == "primary_qa" and row.get("question_id") == q["id"])]
+                    owned_vector.extend(fallback)
+                q["vector_index"] = _vector_summary([
+                    row for row in owned_vector if row.get("scope") == "primary_qa"
+                    and row.get("question_id") == q["id"]])
                 q["call_ids"] = [c["id"] for c in calls if c.get("task_id") == t["id"]
                                  and c.get("question_id") == q["id"] and self._same_attempt(c, t)]
+            t["vector_index"] = _vector_summary(owned_vector)
+            visible_vector_rows.extend(owned_vector)
             t["qa_completed"] = sum(q["status"] == "completed" for q in t["questions"])
             if t["question_count"] is None and t["questions"]:
                 t["question_count"] = len(t["questions"])
             t["nodes"] = [self._node_summary(t, node, calls) for node in NODES]
             requested = any(e.get("task_id") == t["id"] and e.get("event") == "task_optimization_requested" for e in events)
             optimization_status = t["optimization"].get("status")
+            t["policy_edit_mode"], t["policy_edit_mode_source"] = _edit_mode(
+                (t["optimization"], "optimization_report"),
+                (t["optimization"].get("revision"), "revision_report"),
+                (t["optimization"].get("audit"), "optimization_audit"))
             t["optimization_rounds"] = 1 if requested or optimization_status in {"accepted", "rejected", "failed", "skipped"} else 0
             t["optimization_status"] = optimization_status or "unknown"
         for call in calls:
@@ -621,7 +755,7 @@ class RunStore:
                   "created_at": report.get("created_at") or config.get("created_at"),
                   "notices": notices}
         return result, {"report": report, "events": events, "captures": captures,
-                        "component_calls": self._component_calls(ref),
+                        "component_calls": self._component_calls(ref), "vector_index_events": visible_vector_rows,
                         "logs": logs, "config": config, "compiles": self._rows(ref, ref.batch / "compile-captures.jsonl")
                         + self._rows(ref, ref.root / "model-captures/compile-captures.jsonl")}
 
@@ -651,6 +785,10 @@ class RunStore:
                 state = "completed" if passed is True else "failed" if passed is False else "unknown"
         if node == "execution" and task.get("failure") and task["failure"].get("stage") == "qa_execution":
             state = "failed"
+        if node == "components" and task.get("retrieval_resources"):
+            preparation_status = task["retrieval_resources"].get("status")
+            if preparation_status in {"running", "failed"}:
+                state = preparation_status
         return {"id": node, "label": NODES[node], "status": state,
                 "call_ids": [c["id"] for c in relevant],
                 "summary": f"{len(relevant)} 条模型调用" if relevant else "依据本地执行记录"}
@@ -835,6 +973,11 @@ class RunStore:
                  "policy_edit": ["self_optimization/optimizer.py", "self_optimization/contracts.py"],
                  "validation": ["self_optimization/execution_validation.py"],
                  "inheritance": ["self_optimization/task_flow.py", "self_optimization/checkpoint.py"]}
+        if node == "execution" and task.get("qa_execution"):
+            fixed[node].append("self_optimization/scheduling.py")
+        if node in {"components", "execution"} and (task.get("retrieval_resources") or task.get("vector_index")):
+            fixed[node].append("framework/vector_index.py")
+            fixed[node].append("self_optimization/task_flow.py")
         sources = []
         for relative in fixed[node]:
             frozen = ref.root / "model-captures/source-code" / relative
@@ -925,7 +1068,7 @@ class RunStore:
             "input": "同一 Task 的问题集合与语料元数据。Task 共享路由时整组问题参与一次选择。",
             "manage": "Manage 根据任务请求生成统一指导；下一阶段依据该指导选择 Agentic Skill。",
             "agentic": "在 Manage 指导下选择可执行 Agentic 工作流。",
-            "components": "为工作流插槽绑定 Component Skills；本地检索器和重排器不必调用语言模型。",
+            "components": "为工作流插槽绑定 Component Skills；选定 vector 后，在 QA 开始前准备共享索引。",
             "execution": "执行选定工作流，显示每题检索、生成、Critic反馈与停止条件。",
             "evaluation": "对实际输出计算检索和生成指标。",
             "policy_select": "Policy 根据本 Task 的结果选择需要改进的 Skill。",
@@ -945,9 +1088,12 @@ class RunStore:
                     "agentic": ["agentic_skill", "agentic_reason"],
                     "components": ["component_bindings", "component_reason"]}[node_id]
             output = {k: plan.get(k) for k in keys}
+            if node_id == "components":
+                output["retrieval_resources"] = task.get("retrieval_resources")
         elif node_id == "execution":
             inputs = {"question": selected_question.get("question") if selected_question else None,
-                      "plan": plan, "skill_hash": task["skill_hash_before"]}
+                      "plan": plan, "skill_hash": task["skill_hash_before"],
+                      "qa_execution": task.get("qa_execution")}
             output = selected_question or {"questions": task["questions"]}
         elif node_id == "evaluation":
             inputs = {"question": selected_question, "qa_completed": task["qa_completed"]}
@@ -972,9 +1118,21 @@ class RunStore:
         if node_id in {"policy_edit", "inheritance", "validation"}:
             diff, error = self._read_text(ref, revision.get("diff_path")) if revision.get("diff_path") else (None, None)
             versions["diff"] = diff
-            versions["proposal"] = self._artifact_json(ref, str(_path(revision["revision_dir"]) / "proposal.json")) if revision.get("revision_dir") else None
+            proposal_path = (str(_path(revision["revision_dir"]) / "proposal.json") if revision.get("revision_dir")
+                             else (opt.get("audit") or {}).get("proposal_path"))
+            versions["proposal"] = self._artifact_json(ref, proposal_path) if proposal_path else None
+            proposal = versions["proposal"] if isinstance(versions["proposal"], dict) else {}
+            versions["raw_patch"] = proposal.get("raw_action")
             if error:
                 notices.append(error)
+        mode, mode_source = _edit_mode(
+            (chosen, "selected_model_call"), (opt, "optimization_report"),
+            (revision, "revision_report"), (opt.get("audit"), "optimization_audit"),
+            (versions.get("proposal"), "revision_proposal"))
+        versions.update(edit_mode=mode, edit_mode_source=mode_source)
+        if node_id in {"policy_select", "policy_edit"}:
+            inputs["edit_mode"] = mode
+            output["edit_mode"] = mode
         sources = self._logic_sources(ref, node_id, task, raw, question_id, component)
         if component:
             if selected_component_call:
@@ -1002,7 +1160,9 @@ class RunStore:
             inputs["recorded_context_only"] = True
             output = {"record_kind": "historical_model_call", "call_id": chosen["id"]}
             sources = []
-            versions = {"before": chosen.get("skill_hash"), "after": None, "revision": None}
+            mode, mode_source = _edit_mode((chosen, "historical_model_call"))
+            versions = {"before": chosen.get("skill_hash"), "after": None, "revision": None,
+                        "edit_mode": mode, "edit_mode_source": mode_source}
             notices.append("当前查看历史 attempt 的独立模型调用；未与当前 Task 的规划、预测或源码混合。")
         elif historical_calls:
             notices.append(f"此节点另有 {len(historical_calls)} 条历史或 attempt 身份未知的调用，未混入当前 Task；可从调用记录单独查看。")
@@ -1015,17 +1175,30 @@ class RunStore:
         relevant_events = [e for e in raw["events"] if e.get("task_id") == task_id
                            and e.get("attempt_id") == (chosen.get("attempt_id") if viewing_history else task.get("attempt_id"))
                            and (not question_id or e.get("question_id") in {question_id, None})]
+        vector_observations = [row for row in raw["vector_index_events"]
+                               if node_id in {"components", "execution"} and not viewing_history
+                               and row.get("task_id") == task_id and self._same_attempt(row, task)
+                               and row.get("scope") in {"task_resource_preparation", "primary_qa"}
+                               and (not question_id or row.get("question_id") == question_id)
+                               and (not component or component in {
+                                   row.get("component_name"), row.get("component"), row.get("slot")})]
         result = {"title": NODES[node_id], "id": node_id, "task_id": task_id,
                   "question_id": question_id, "status": chosen["status"] if viewing_history else component_status or next(n["status"] for n in task["nodes"] if n["id"] == node_id),
                   "model": chosen.get("model") if chosen else (run["policy_model"] if node_id.startswith("policy") else None),
                   "description": descriptions[node_id], "inputs": inputs, "output": output,
                   "calls": calls, "selected_call": self._selected_call(ref, chosen, raw) if chosen else None,
                   "component_calls": component_calls, "selected_component_call": selected_component_call,
+                  "qa_execution": task.get("qa_execution") if node_id == "execution" and not viewing_history else None,
+                  "retrieval_resources": task.get("retrieval_resources") if node_id in {"components", "execution"} and not viewing_history else None,
+                  "vector_index": _vector_summary(vector_observations),
+                  "vector_index_events": vector_observations,
                   "unattributed_qa_calls": unattributed_qa_calls,
                   "model_call_association": "question_only" if chosen_unattributed else "component" if component and calls else "question" if not component else "unrecorded",
                   "logic_sources": sources, "verification": None if viewing_history else opt.get("verification"),
                   "failure": None if viewing_history else task.get("failure"),
                   "skill_versions": versions, "events": relevant_events,
+                  "policy_edit_mode": mode if node_id in {"policy_select", "policy_edit", "validation", "inheritance"} else None,
+                  "policy_edit_mode_source": mode_source if node_id in {"policy_select", "policy_edit", "validation", "inheritance"} else None,
                   "evidence": {"run_path": str(ref.root), "capture_count": len(calls), "source": "recorded_artifacts",
                                "current_attempt_id": task.get("attempt_id"), "historical_call_count": len(historical_calls),
                                "viewing_historical_call": viewing_history, "capture_manifest": run.get("capture_manifest"),

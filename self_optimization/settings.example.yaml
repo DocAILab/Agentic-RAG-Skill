@@ -55,9 +55,12 @@ optimizer:
             include_usage: true
 
 optimization:
+  # patch: 精确增量替换；full: 返回完整文件，便于小模型切回。
+  # 不填写时保留 full 兼容旧配置；两种协议不会在失败时自动互换。
+  edit_mode: patch
   # 优化需要一定探索性，但过高会降低 JSON 和代码稳定性。
   temperature: 0.1
-  # 优化模型单次响应预算；必须足够返回一个文件的完整替换内容。
+  # 优化模型单次响应预算；full 模式必须容纳完整文件，patch 模式容纳替换片段。
   max_tokens: 8192
   # 下面四项共同限制发送给优化模型的上下文，避免语料或 Skill 脚本导致 prompt 过大。
   max_prompt_chars: 120000
@@ -65,7 +68,7 @@ optimization:
   max_process_chars: 30000
   max_documents: 10
   document_excerpt_chars: 1200
-  # 一轮只能选择一个 Skill，并最多完整替换这里指定数量的文件。
+  # 一轮只能选择一个 Skill，最多修改这里指定数量的文件。
   max_edits: 3
   # 模型返回不存在的路径、无实质变化或非法 JSON 时，携带明确错误反馈自动纠正的总尝试次数。
   # HTTP 失败仍由 optimizer.options.max_retries 处理，两者不是同一层重试。

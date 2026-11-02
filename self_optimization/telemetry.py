@@ -27,7 +27,7 @@ STATISTICS_KEYS = (
     "response_structure_errors", "provider_errors", "http_errors",
     "transport_errors", "response_content_errors", "other_api_errors",
 )
-CONTEXT_KEYS = {"group_id", "task_id", "attempt_id", "question_id", "scope"}
+CONTEXT_KEYS = {"group_id", "task_id", "attempt_id", "question_id", "scope", "edit_mode"}
 COMPONENT_IO_LIMITS = {"max_bytes": 262144, "max_collection_items": 50,
                        "max_string_bytes": 32768, "max_depth": 8, "max_nodes": 1000}
 _SK_KEY = re.compile(r"\bsk-[A-Za-z0-9._-]+", re.IGNORECASE)
@@ -111,6 +111,7 @@ class ModelCaptureRecorder:
                          "capture_log": str(self.root / "capture-log.jsonl"),
                          "compile_log": str(self.root / "compile-captures.jsonl"),
                          "component_log": str(self.root / "component-calls.jsonl"),
+                         "vector_index_log": str(self.root / "vector-index-events.jsonl"),
                          "component_io_limits": dict(COMPONENT_IO_LIMITS),
                          "text_hash_scope": "persisted_redacted_utf8", "warnings": [],
                          "http_attempts": "unknown unless client exposes last_request_statistics"}
@@ -253,6 +254,23 @@ class ModelCaptureRecorder:
     def _context(self):
         with self.lock:
             return {**self.base_context, **self.local_context.get(), **self.component_context.get()}
+
+    def record_vector_index(self, record):
+        """Record one real index operation without changing its outcome."""
+        def write():
+            allowed = {
+                "operation", "status", "cache_key", "cache_source", "cache_hit",
+                "document_count", "dimension", "cache_path", "duration_seconds",
+                "build_seconds", "load_seconds", "disk_lookup_seconds", "wait_seconds",
+                "query_seconds", "query_embedding_seconds", "search_seconds",
+                "error_type", "error", "component", "slot",
+            }
+            row = {key: value for key, value in record.items() if key in allowed}
+            # Context ownership is supplied by the recorder, never a component.
+            row.update(self._context(), timestamp=_utc(), event_id=uuid.uuid4().hex)
+            content, _, _ = self._component_payload(row)
+            self._append("vector-index-events.jsonl", json.loads(content))
+        self._observe("record_vector_index", write)
 
     def _text(self, row, field, value, directory):
         row[field + "_path"] = None

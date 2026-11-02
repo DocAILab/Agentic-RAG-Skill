@@ -18,7 +18,7 @@ from uuid import uuid4
 
 from framework import RAGSkillSpec, SkillSpecError, discover_specs
 
-from .contracts import OptimizationProposal, RevisionResult, SkillEdit
+from .contracts import OptimizationProposal, RevisionResult, SkillEdit, materialize_patch
 from .python_validation import (
     validate_agentic_slot_references,
     validate_component_context_contract,
@@ -241,6 +241,26 @@ class SkillWorkspace:
             max_file_chars=max_file_chars,
             allow_new_files=allow_new_files,
         )
+        if proposal.edit_mode not in {"full", "patch"}:
+            raise RevisionRejected("Proposal edit_mode must be full or patch")
+        if proposal.edit_mode == "patch":
+            # Check every base before writing even the first file. A stale or
+            # tampered multi-file patch must leave the entire working tree intact.
+            for edit in proposal.edits:
+                target = _resolve_edit_target(spec.package_path, edit.path)
+                if not target.is_file():
+                    raise RevisionRejected("Patch mode cannot create files")
+                try:
+                    materialized = materialize_patch(
+                        target.read_text(encoding="utf-8"), edit.base_sha256,
+                        edit.replacements,
+                    )
+                except (OSError, UnicodeError, ValueError) as exc:
+                    raise RevisionRejected(f"Patch rejected before application: {exc}") from exc
+                if materialized != edit.content:
+                    raise RevisionRejected("Patch materialized content does not match its original action")
+        elif any(edit.base_sha256 is not None or edit.replacements for edit in proposal.edits):
+            raise RevisionRejected("Full mode cannot contain patch provenance")
 
         self._revision_number += 1
         revision_id = f"revision-{self._revision_number:04d}"
@@ -292,6 +312,7 @@ class SkillWorkspace:
                     "status": "rejected",
                     "error_type": type(exc).__name__,
                     "error": str(exc),
+                    "edit_mode": proposal.edit_mode,
                 },
             )
             self.assert_source_unchanged()
@@ -311,6 +332,7 @@ class SkillWorkspace:
             after_hash=after_hash,
             revision_dir=revision_dir,
             diff_path=diff_path,
+            edit_mode=proposal.edit_mode,
         )
         _write_json(revision_dir / "result.json", {"status": "accepted", **result.to_dict()})
         self.assert_source_unchanged()

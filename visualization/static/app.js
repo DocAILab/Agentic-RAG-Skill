@@ -309,6 +309,12 @@ function renderWorkflow() {
     $("task-tabs").append(tab);
   }
   clear($("task-summary"),el("span","",`TASK ID · ${task.id}`),el("span","","Skill ",el("code","",shortHash(task.skill_hash_before))));
+  if(task.qa_execution) {
+    const scheduling=task.qa_execution;
+    const limit=scheduling.final_concurrency_limit ?? scheduling.concurrency_limit;
+    $("task-summary").append(el("span","",`${qaModeLabel(scheduling.config?.mode)} · 峰值 ${number(scheduling.peak_in_flight)} · ${scheduling.status==="running" ? "当前" : "最终"}上限 ${number(limit)}`));
+  }
+  if(task.vector_index)$("task-summary").append(el("span","",`Vector · 建库 ${number(task.vector_index.builds)} · 加载 ${number(task.vector_index.disk_loads)} · 内存命中 ${number(task.vector_index.memory_hits)}`));
   clear($("workflow-map"));
   for (let index=0;index<FLOW.length;index++) {
     const step = FLOW[index];
@@ -490,6 +496,104 @@ function validationModeLabel(value) {
   if(!value || value==="unknown")return "此运行未记录";
   return ({execution:"执行验证",execution_only:"执行验证",execution_validation:"执行验证",performance:"性能门槛",performance_gate:"性能门槛",metrics:"指标门槛"})[value] || value;
 }
+function qaModeLabel(value) {
+  return ({serial:"串行",fixed:"固定并行",adaptive:"自适应并行"})[value] || (present(value) ? value : "并行模式未记录");
+}
+function editModeLabel(value) {
+  return ({full:"full · 完整文件",patch:"patch · 精确增量替换"})[value] || "此运行未记录";
+}
+function warmStartReason(value) {
+  const labels={no_committed_history:"没有可继承的已提交 Task",reuse_disabled:"已关闭跨 Task 复用",mode_not_adaptive:"当前为串行或固定并行",history_not_adjacent:"健康记录不属于相邻 Task",previous_task_has_no_warm_start_evidence:"前一 Task 缺少健康并发记录",execution_identity_changed:"模型、路由或资源身份发生变化",previous_task_untrusted_statistics:"前一 Task 的调用统计不可信或不完整",previous_task_missing_evidence:"前一 Task 缺少健康窗口证据",decayed_limit_not_above_configured_initial:"安全衰减后不高于配置起点，使用配置起点",committed_healthy_limit_decayed:"继承已提交 Task 的健康并发，并安全衰减",qa_failure:"主 QA 执行失败",statistics_not_available:"调用统计不可用或覆盖不完整",model_retry_pressure:"出现真实限流或重试压力",insufficient_healthy_windows:"健康饱和窗口不足两个",healthy_saturated_windows:"已有至少两个实测健康饱和窗口"};
+  if(labels[value])return labels[value];
+  if(typeof value==="string" && value.startsWith("previous_task_"))return `前一 Task：${warmStartReason(value.slice("previous_task_".length))}`;
+  return value || "此运行未记录";
+}
+function renderVectorIndex(summary,preparation,events=[]) {
+  if(preparation) {
+    const resources=array(preparation.resources);
+    const content=el("div","",kv([
+      ["状态",statusLabel(preparation.status)],
+      ["QA 前准备墙钟时间",present(preparation.duration_seconds) ? duration(preparation.duration_seconds) : null],
+      ["准备的共享索引",Array.isArray(preparation.resources) ? resources.length : null],
+    ]));
+    if(preparation.status==="completed" && resources.length===0)content.append(el("p","section-subline","本 Task 未选择需要提前准备的检索资源。"));
+    if(resources.length)content.append(el("details","call-attempt",
+      el("summary","","查看共享索引准备证据"),codeBlock(resources)));
+    if(preparation.status==="failed")content.append(codeBlock({error_type:preparation.error_type,error:preparation.error}));
+    appendSection("检索资源准备",content,"database");
+  } else if(!summary)appendSection("检索资源准备",missing("此运行未记录索引提前准备信息。"),"database");
+  if(!summary) {
+    appendSection("Vector 索引统计",missing(preparation?.status==="completed" && Array.isArray(preparation.resources) && preparation.resources.length===0 ? "本 Task 未记录 vector 检索操作。" : "此范围未记录 vector 建库、加载或查询统计。"),"database");
+    return;
+  }
+  const timings=summary.timings || {};
+  const content=el("div","",kv([
+    ["建库次数",summary.builds],["磁盘加载次数",summary.disk_loads],["内存命中次数",summary.memory_hits],
+    ["缓存命中率（已知来源）",present(summary.cache_hit_rate) ? `${(100*summary.cache_hit_rate).toFixed(1)}%` : null],
+    ["来源未记录的操作",summary.cache_source_unknown],["查询次数",summary.queries],
+    ["失败操作",summary.failed_operations],
+    ["建库累计耗时",present(timings.build_seconds) ? duration(timings.build_seconds) : null],
+    ["磁盘加载累计耗时",present(timings.load_seconds) ? duration(timings.load_seconds) : null],
+    ["查询累计耗时",present(timings.query_seconds) ? duration(timings.query_seconds) : null],
+    ["查询向量编码累计耗时",present(timings.query_embedding_seconds) ? duration(timings.query_embedding_seconds) : null],
+    ["相似度搜索累计耗时",present(timings.search_seconds) ? duration(timings.search_seconds) : null],
+    ["索引锁等待累计耗时",present(timings.wait_seconds) ? duration(timings.wait_seconds) : null],
+  ]),el("p","section-subline","查询耗时包含查询向量编码与相似度搜索，不含索引获取。并行操作的累计耗时会重叠，不能当作 Task 墙钟时间。"));
+  if(summary.availability==="partial")content.append(el("p","detail-notice warning","统计字段部分覆盖；未记录的耗时保留未知。次数仅统计已记录的来源。"),codeBlock(summary.timing_coverage));
+  if(array(events).length) {
+    const details=el("details","call-attempt",el("summary","",`${events.length} 条索引操作证据`));
+    for(const operation of events) {
+      const source=({built:"首次建库",disk:"磁盘命中",memory:"内存命中"})[operation.cache_source] || "来源未记录";
+      details.append(el("details","call-attempt",el("summary","",`${operation.operation==="prepare" ? "准备" : "查询"} · ${source} · ${statusLabel(operation.status)} · ${duration(operation.duration_seconds)}`),codeBlock(operation)));
+    }
+    content.append(details);
+  }
+  appendSection("Vector 索引统计",content,"database");
+}
+function renderQAScheduling(scheduling) {
+  if(!scheduling) {
+    appendSection("QA 调度",missing("此运行未记录 QA 并发统计。"),"execution");return;
+  }
+  const config=scheduling.config || {};
+  const limit=scheduling.final_concurrency_limit ?? scheduling.concurrency_limit;
+  const warm=scheduling.warm_start;
+  const evidence=scheduling.warm_start_evidence;
+  const content=el("div","",kv([
+    ["模式",qaModeLabel(config.mode)],
+    ["配置起始并发",scheduling.configured_initial_concurrency ?? config.initial_workers],
+    ["本 Task 实际起点",scheduling.effective_initial_concurrency],
+    ["实际在途峰值",scheduling.peak_in_flight],
+    [scheduling.status==="running" ? "当前并发上限" : "最终并发上限",limit],
+    ["配置并发范围",present(config.min_workers) && present(config.max_workers) ? `${config.min_workers}–${config.max_workers}` : null],
+    ["完成 QA",scheduling.completed_examples],
+    ["QA 执行墙钟时间",present(scheduling.wall_seconds) ? duration(scheduling.wall_seconds) : null],
+  ]),el("p","section-subline","并发峰值表示同时在途的题数。"));
+  if(warm) {
+    content.append(kv([
+      ["跨 Task 起点复用",warm.enabled===false ? "已关闭" : warm.reused===true ? "已复用" : warm.reused===false ? "冷启动" : null],
+      ["起点依据",warmStartReason(warm.reason)],
+      ["来源 Task",warm.source_task_id],
+      ["来源健康并发",warm.healthy_limit],
+      ["安全衰减级数",warm.decay_steps],
+      ["衰减后起点",warm.starting_limit],
+    ]));
+    content.append(el("p","section-subline","复用已确认的健康并发并保守衰减；新 Task 重新测量吞吐基准，不继承尾部峰值或未确认的探测上限。"));
+  } else content.append(el("p","section-subline","此运行未记录跨 Task 起点继承证据。"));
+  if(evidence)content.append(el("details","call-attempt",el("summary","","下一 Task 可复用的健康并发证据"),kv([
+    ["可供复用",evidence.eligible===true ? "是" : evidence.eligible===false ? "否" : null],
+    ["依据",warmStartReason(evidence.reason)],
+    ["确认健康并发",evidence.healthy_limit],
+    ["完整健康饱和窗口",evidence.confirmed_saturated_windows],
+  ]),codeBlock(evidence)));
+  const reasons={probe_capacity:"探测更多并发容量",model_retry_pressure:"模型请求出现重试，降低并发",latency_inflation:"单题延迟升高，降低并发",probe_no_throughput_gain:"增加并发未提升吞吐，退回原上限",throughput_improved:"吞吐提升",sustained_throughput_drop:"连续两窗吞吐下降，降低并发",throughput_drop_unconfirmed:"单窗吞吐下降，保持并发继续观察",throughput_plateau:"吞吐持平，保持并发",cooldown:"冷却观察",at_configured_ceiling:"达到配置上限",hold:"保持并发"};
+  const changes=array(scheduling.adjustments);
+  if(changes.length) {
+    const details=el("details","call-attempt",el("summary","",`${changes.length} 条调度调整记录`));
+    for(const change of changes)details.append(el("p","detail-description",`完成 ${number(change.completed_examples)} 题 · ${number(change.previous_limit)} → ${number(change.concurrency_limit)} · ${reasons[change.reason] || change.reason || "原因未记录"}`));
+    content.append(details);
+  }
+  appendSection("QA 调度",content,"execution");
+}
 function kv(rows) {
   const list=el("dl","detail-kv");
   for(const [label,value] of rows) list.append(el("div","",el("dt","",label),el("dd","",text(value))));
@@ -516,6 +620,8 @@ function renderWelcome() {
   const task=currentTask();
   $("detail-body").append(el("div","inspector-intro",el("span","intro-icon",icon("cursor")),el("div","",el("h3","","跟随执行路径，查看完整证据"),el("p","","点击左侧任意环节，查看其输入、模型 Prompt、回答和真实执行逻辑。每条 QA 都可以独立追踪。"))));
   appendSection("当前任务",kv([["Task",task?.id],["执行状态",statusLabel(task?.status)],["已完成 QA",`${number(task?.qa_completed)}${present(task?.question_count) ? ` / ${number(task.question_count)}` : ""}`],["输入版本",task?.skill_hash_before],["验证模式",validationModeLabel(state.run?.revision_validation_mode)],["实验版本",state.run?.experiment_version && state.run.experiment_version!=="unknown" ? state.run.experiment_version : null]]),"task");
+  renderQAScheduling(task?.qa_execution);
+  renderVectorIndex(task?.vector_index,task?.retrieval_resources);
   appendSection("可探索的执行证据",el("div","",el("p","detail-description","Manage 与 Agentic 决策 → Component 绑定 → 逐题执行与评估 → Policy 修改 → 验证与跨任务继承。"),el("p","section-subline","历史运行未捕获的 Prompt 或模型回答会显示“此运行未记录”。")),"layers");
   const calls=array(state.run?.calls).filter(c=>c.task_id===task?.id);
   appendSection("调用记录",kv([["当前 Task",`${calls.length} 条已记录调用`],["查看方法","点击流程环节，再从调用选择器选择完整记录"]]),"code");
@@ -529,9 +635,12 @@ function renderDetailOverview(detail) {
     appendSection("组件实际输入",record ? capturedBlock(record.inputs) : missing("此运行未记录逐组件函数输入。"),"input",record?.inputs);
     appendSection("组件实际输出",record ? capturedBlock(record.output,"response-code") : missing("此运行未记录逐组件函数输出。"),"execution",record?.output);
     renderComponentRecording(record);
+    if(detail.vector_index)renderVectorIndex(detail.vector_index,null,detail.vector_index_events);
     renderCallList(visibleCalls(detail));appendNotices(record?.notices);appendNotices(detail.notices);return;
   }
   if(detail.description) $("detail-body").append(el("div","inspector-intro",el("span","intro-icon",icon(state.nodeId)),el("div","",el("h3","",currentNode()?.label || detail.title),el("p","",detail.description))));
+  if(state.nodeId==="execution" && !detail.evidence?.viewing_historical_call)renderQAScheduling(detail.qa_execution);
+  if(["components","execution"].includes(state.nodeId) && !detail.evidence?.viewing_historical_call)renderVectorIndex(detail.vector_index,detail.retrieval_resources,detail.vector_index_events);
   if(question && !detail.evidence?.viewing_historical_call) {
     appendSection("问题",el("p","question-hero",question.question || "此运行未记录"),"questions",question.question);
     appendSection("模型回答",codeBlock(question.prediction,"response-code"),null,question.prediction);
@@ -541,7 +650,7 @@ function renderDetailOverview(detail) {
   } else {
     appendSection("环节信息",kv([["状态",statusLabel(detail.status)],["模型",detail.model],["调用数量",array(detail.calls).length],["任务 ID",detail.task_id || state.taskId]]),"info");
     appendSection("实际输出",codeBlock(detail.output),null,nonempty(detail.output) ? detail.output : null);
-    if(["policy_edit","validation","inheritance"].includes(state.nodeId)) renderVersions(detail.skill_versions,false);
+    if(["policy_edit","validation","inheritance"].includes(state.nodeId)) renderVersions(detail.skill_versions,state.nodeId==="policy_edit");
     if(state.nodeId==="validation") appendSection("执行验证",codeBlock(detail.verification),"validation");
   }
   renderCallList(detail.calls);
@@ -681,14 +790,17 @@ function renderVersions(versions,includeDiff=true) {
   if(!versions)return;
   const hashFlow=el("div","hash-flow",el("code","",shortHash(versions.before)),icon("arrow-right"),el("code","",shortHash(versions.after)));
   appendSection("Skill 版本",hashFlow,"evolution");
+  const sourceLabels={selected_model_call:"所选模型调用",optimization_report:"优化报告",revision_report:"修订报告",optimization_audit:"优化审计",revision_proposal:"修订提案",historical_model_call:"历史模型调用"};
+  appendSection("Policy 编辑协议",kv([["实际模式",editModeLabel(versions.edit_mode)],["模式证据来源",sourceLabels[versions.edit_mode_source] || null]]),"policy_edit");
+  if(versions.edit_mode==="patch")appendSection("原始 Patch 动作",nonempty(versions.raw_patch) ? codeBlock(versions.raw_patch) : missing("此范围未记录可归属的原始 Patch 动作；可在回答页查看模型原文。"),"code",versions.raw_patch);
   if(nonempty(versions.revision))appendSection("修改记录",codeBlock(versions.revision));
   if(includeDiff) {
     if(nonempty(versions.diff)) {
       const pre=el("pre","detail-code");
       for(const line of text(versions.diff).split("\n"))pre.append(el("span",line.startsWith("+")&&!line.startsWith("+++") ? "diff-add" : line.startsWith("-")&&!line.startsWith("---") ? "diff-remove" : "",`${line}\n`));
-      appendSection("Skill Diff",pre,"policy_edit",versions.diff);
+      appendSection(versions.edit_mode==="patch" ? "Patch 物化后的 Skill Diff" : "Skill Diff",pre,"policy_edit",versions.diff);
     } else appendSection("Skill Diff",missing());
-    if(nonempty(versions.proposal))appendSection("修改提案",codeBlock(versions.proposal));
+    if(nonempty(versions.proposal))appendSection(versions.edit_mode==="patch" ? "物化文件提案与补丁来源" : "修改提案",codeBlock(versions.proposal));
   }
 }
 function renderEvidence(detail) {
